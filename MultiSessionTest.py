@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+import numpy as np
+np.set_printoptions(linewidth=np.inf, suppress=False)
+import copy
+import time
+from pathlib import Path
+import open3d as o3d
+from scipy.spatial import KDTree
+
+# Local imports
+import gtsam
+import FGVizHelpers as fgtools
+from SessionUpdater import SessionUpdater
+from SessionManager import SessionManager
+from params import Params
+from base import DecisionType
+
+
+
+# ------------------------------------------------------------
+# Load data
+# ------------------------------------------------------------
+scriptDir = Path(__file__).resolve().parents[1]
+directory1 = scriptDir  / "results/urban/around_block_initial/"
+directory2 = scriptDir / "results/urban/around_block_short_reconnect/"
+directory3 = scriptDir / "results/urban/quick_map_disconnect/"
+
+fileName = "fullSavedGraph.g2o"
+useGPS = True
+session1 = SessionManager(directory1 / fileName, loadGPS=True)
+session2 = SessionManager(directory2 / fileName, loadGPS=True)
+session3 = SessionManager(directory3 / fileName, loadGPS=True)
+
+session1.UpdateISAM2()
+session2.UpdateISAM2()
+session3.UpdateISAM2()
+
+session1.LoadScans(directory1 / "Scans")
+session2.LoadScans(directory2 / "Scans")
+session3.LoadScans(directory3 / "Scans")
+
+bag_colors = ['tab:blue', 'tab:orange', 'tab:green']
+
+# ax = fgtools.plot_graph(session1.graph, session1.values, color_override=bag_colors[0], alpha=0.5, addKeyLabels=True)
+# # fgtools.plot_graph_covariances(session1.values.keys(), session1.graph, session1.values, ax=ax)
+
+# # fgtools.plot_graph(session2.graph, session2.orig_values_, ax=ax, color_override=bag_colors[1], alpha=0.5)
+# # fgtools.plot_graph_covariances(session2.values.keys(), session2.graph, session2.values, ax=ax)
+
+# # fgtools.plot_graph(session3.graph, session3.values, ax=ax, color_override=bag_colors[2], alpha=0.5)
+# # fgtools.plot_graph_covariances(session3.values.keys(), session3.graph, session3.values, ax=ax)
+
+# legendElements = [
+#                     Line2D([0],[0], marker='o', color='w', label="bag 1", markerfacecolor=bag_colors[0]),
+#                     # Line2D([0],[0], marker='o', color='w', label="bag 2", markerfacecolor=bag_colors[1]),
+#                     # Line2D([0],[0], marker='o', color='w', label="bag 3", markerfacecolor=bag_colors[2]),
+#                 ]
+# ax.legend(handles=legendElements, loc='lower right')
+# ax.set_title("Aligned Via GPS Only")
+
+# plt.show()
+
+# globalMap1 = session1.CreateGlobalPCD((1, 0, 0))
+# globalMap2 = session2.CreateGlobalPCD((0, 1, 0))
+# globalMap3 = session3.CreateGlobalPCD((0, 0, 1))
+
+# o3d.visualization.draw_geometries([globalMap1, globalMap2, globalMap3])
+
+#########################################################################################
+# Session 2
+#########################################################################################
+
+priorSession = SessionManager()
+priorSession = session1
+# priorPoses, keys = GetPosesFromGraphEstimate(priorSession.values)
+# priorSession.AddPrior(0, 
+#                       gtsam.Pose3(
+#                           gtsam.Rot3(priorPoses[0,3], priorPoses[0,4], priorPoses[0,5], priorPoses[0,6]), 
+#                           priorPoses[0,:3]), 
+#                       gtsam.noiseModel.Diagonal.Variances(np.array([1e8]*6)),
+#                       skipValue=True
+#                       )
+updater = SessionUpdater(priorSession, 
+                         Params(
+                             rekeyPrior=True, 
+                            #  currSessionSymbolChr='b',
+                            #  priorSessionSymbolChrs=['a'],
+                             decisionMethod=DecisionType.DISTANCE,
+                             fixedLagCurrentSession=True,
+                             ),
+                        )
+
+_, ax = plt.subplots()
+
+currentSession = session2
+poses, keys = fgtools.GetPosesFromGraphEstimate(currentSession.values)
+scans = currentSession.scans
+cnt = 0
+totalCnt = 0
+MAX_COUNT = 0
+startTime = time.time()
+for i, pose in enumerate(poses):
+    currPose = gtsam.Pose3(gtsam.Rot3(pose[3], pose[4], pose[5], pose[6]), pose[:3])
+    if i == 0:
+        relPose = None
+    else:
+        tmpPose = poses[i-1]
+        prevPose = gtsam.Pose3(gtsam.Rot3(tmpPose[3], tmpPose[4], tmpPose[5], tmpPose[6]), tmpPose[:3])
+        relPose = prevPose.between(currPose)
+    updater.AddOdomKeyFrame(pose, scans[keys[i]], relPose)
+
+    if cnt >= MAX_COUNT: # or totalCnt > 560:
+    # if True:
+        cnt = 0
+        ax.clear()
+        # fgtools.plot_graph(updater.prior.graph, updater.prior.values, ax=ax, color_override=bag_colors[0], alpha=0.5)
+        # fgtools.plot_graph(updater.current.graph, updater.current.values, ax=ax, title="Testing Loop Closure in Graph", color_override=bag_colors[1], alpha=0.5)
+        fgtools.plot_graph(updater.combined.graph, updater.combined.values, ax=ax, title="Testing Combined Graph", changeColorBySymbols=True)
+        # ax.set_xlim(0, 100)
+        # ax.set_ylim(-200, -100)
+        plt.pause(0.05)
+    cnt += 1
+    totalCnt += 1
+
+print(f"Total time for second session: {time.time() - startTime}")
+
+ax.clear()
+fgtools.plot_graph(updater.combined.graph, updater.combined.values, ax=ax, title="Testing Combined Graph", addKeyLabels=True, changeColorBySymbols=True)
+# fgtools.plot_graph_covariances(updater.combined.values.keys(), updater.combined.graph, updater.combined.values, ax=ax)
+
+plt.show()
+
+updater.combined.Finalize()
+combinedPointCloud = updater.combined.CreateGlobalPCD()
+o3d.visualization.draw_geometries([combinedPointCloud])
+
+
+
+
+###################################################################################
+# Session 3
+###################################################################################
+
+priorSession = updater.combined
+# priorSession = session1
+priorPoses, keys = fgtools.GetPosesFromGraphEstimate(priorSession.values)
+# priorSession.AddPrior(0, 
+#                       gtsam.Pose3(
+#                           gtsam.Rot3(priorPoses[0,3], priorPoses[0,4], priorPoses[0,5], priorPoses[0,6]), 
+#                           priorPoses[0,:3]), 
+#                       gtsam.noiseModel.Diagonal.Variances(np.array([1e-8]*6)),
+#                       skipValue=True
+#                       )
+updater = SessionUpdater(priorSession, 
+                         Params(
+                             rekeyPrior=True, 
+                             decisionMethod=DecisionType.DISTANCE,
+                             fixedLagCurrentSession=True,
+                             )
+                         )
+# updater.AddInitialOrientationForCurrentSession(gtsam.Rot3(w=0., x=0., y=0., z=1.))
+
+_, ax = plt.subplots()
+
+currentSession = session3
+poses, keys = fgtools.GetPosesFromGraphEstimate(currentSession.values)
+scans = currentSession.scans
+cnt = 0
+for i, pose in enumerate(poses):
+    currPose = gtsam.Pose3(gtsam.Rot3(pose[3], pose[4], pose[5], pose[6]), pose[:3])
+    if i == 0:
+        relPose = None
+    else:
+        tmpPose = poses[i-1]
+        prevPose = gtsam.Pose3(gtsam.Rot3(tmpPose[3], tmpPose[4], tmpPose[5], tmpPose[6]), tmpPose[:3])
+        relPose = prevPose.between(currPose)
+    updater.AddOdomKeyFrame(pose, scans[keys[i]], relPose)
+
+    if cnt > 5:
+        cnt = 0
+        ax.clear()
+        # fgtools.plot_graph(updater.prior.graph, updater.prior.values, ax=ax, color_override=bag_colors[0], alpha=0.5)
+        # fgtools.plot_graph(updater.current.graph, updater.current.values, ax=ax, title="Testing Loop Closure in Graph", color_override=bag_colors[1], alpha=0.5)
+        fgtools.plot_graph(updater.combined.graph, updater.combined.values, ax=ax, title="Testing Combined Graph", changeColorBySymbols=True)
+        plt.pause(0.05)
+    cnt += 1
+
+ax.clear()
+# fgtools.plot_graph(updater.prior.graph, updater.prior.values, ax=ax, color_override=bag_colors[0], alpha=0.5)
+# fgtools.plot_graph(updater.current.graph, updater.current.values, ax=ax, title="Testing Loop Closure in Graph", color_override=bag_colors[1], alpha=0.5, addKeyLabels=True)
+fgtools.plot_graph(updater.combined.graph, updater.combined.values, ax=ax, title="Testing Combined Graph", addKeyLabels=False, changeColorBySymbols=True)
+# fgtools.plot_graph_covariances(updater.combined.values.keys(), updater.combined.graph, updater.combined.values, ax=ax)
+plt.show()
+
+combinedPointCloud = updater.combined.CreateGlobalPCD()
+o3d.visualization.draw_geometries([combinedPointCloud])
+
+

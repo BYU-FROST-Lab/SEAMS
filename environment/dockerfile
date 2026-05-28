@@ -1,0 +1,49 @@
+FROM ubuntu:24.04
+
+# Set up python installation
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12-full \
+    python3.12-dev \
+    python3-pip
+# Set this environment variable to allow pip installation to 'system' python. Virtual environments might be a more elegant solution, but that's for another time. This is my 'quick' fix.
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+
+# GTSAM prereqs
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    libboost-all-dev \
+    libtbb-dev \
+    make \
+    cmake \
+    wget \
+    doxygen \
+    git
+
+# Download GTSAM
+ARG GTSAM_VERSION="4.3a1"
+RUN cd /home && \
+    git clone -b ${GTSAM_VERSION} https://github.com/borglab/gtsam.git \
+    mkdir gtsam && \
+    tar -zxf gtsam.tar.gz -C gtsam --strip-components 1 && \
+    rm gtsam.tar.gz
+
+# Install python package prereqs and any desired libraries
+RUN pip install -r /home/gtsam/python/dev_requirements.txt && \
+    pip install matplotlib ipython scipy
+
+# Install/Setup GTSAM for both C++ and Python
+#-DGTSAM_PYTHON_VERSION=3.12
+RUN cd /home/gtsam && \
+    mkdir build && \
+    cd build && \
+    cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DGTSAM_BUILD_PYTHON=1 && \
+    make install -j4 && \
+    # make python-install
+    cd python && \
+    pip install . && \
+    ldconfig
+
+# Copy local files to container
+WORKDIR /root
+

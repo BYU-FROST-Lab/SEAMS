@@ -1,0 +1,27 @@
+services:
+  gtsam_test:
+    build:
+      context: ..
+      dockerfile: docker/dockerfile
+    image: gtsam_test
+    container_name: gtsam_test
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix # Needed to display RViz within the container
+      - ${HOME}/blocklio/:/root/blocklio/
+      # - ${HOME}/data_byu/bags:/root/data_byu
+      # - ${HOME}/data_sets:/root/data_sets
+      - ${HOME}/yride_env_setup:/yride_env_setup:ro
+    environment:
+      DISPLAY: "${DISPLAY}"
+      ROS_DOMAIN_ID: 36
+      CONTAINER_NAME: gtsam_test      
+      RCUTILS_COLORIZED_OUTPUT: 1 # Allows launch files to print colored text
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+    runtime: nvidia
+    network_mode: host
+    stdin_open: true
+    tty: true
+    working_dir: /root/blocklio
+    command: ["bash"]
+    
