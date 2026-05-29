@@ -1,0 +1,12 @@
+# Custom GTSAM wheel (built via environment/docker — see environment/README.md)
+./environment/gtsam-4.3a0-py3-none-manylinux_2_39_x86_64.whl
+
+# Core dependencies (also listed in pyproject.toml)
+numpy
+scipy
+matplotlib
+open3d
+
+# Used by sparcification/NFR.py
+networkx
+cvxpy

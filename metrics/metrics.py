@@ -1,9 +1,9 @@
 import numpy as np
 import open3d as o3d
-from base import DecisionType
+from policy.base import DecisionType
 from scipy.spatial import KDTree
 import gtsam
-from customStructs import TreeData
+from common.customStructs import TreeData
 
 class Metrics:
     def __init__(self, method: DecisionType|list[DecisionType]):

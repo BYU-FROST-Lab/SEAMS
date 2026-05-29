@@ -12,18 +12,25 @@ from scipy.spatial import KDTree
 
 # Local imports
 import gtsam
-import FGVizHelpers as fgtools
-from SessionUpdater import SessionUpdater
-from SessionManager import SessionManager
+import common.FGVizHelpers as fgtools
+from multiSession.SessionUpdater import SessionUpdater
+from multiSession.SessionManager import SessionManager
 from params import Params
-from base import DecisionType
+from policy.base import DecisionType
+from common.LiveMapVisualizer import LiveMapVisualizer
+
+# ------------------------------------------------------------
+# Visualization flags
+# ------------------------------------------------------------
+ENABLE_MATPLOTLIB = True
+ENABLE_OPEN3D = False
 
 
 
 # ------------------------------------------------------------
 # Load data
 # ------------------------------------------------------------
-scriptDir = Path(__file__).resolve().parents[1]
+scriptDir = Path(__file__).resolve().parents[2]
 directory1 = scriptDir  / "results/urban/around_block_initial/"
 directory2 = scriptDir / "results/urban/around_block_short_reconnect/"
 directory3 = scriptDir / "results/urban/quick_map_disconnect/"
@@ -88,7 +95,7 @@ updater = SessionUpdater(priorSession,
                              rekeyPrior=True, 
                             #  currSessionSymbolChr='b',
                             #  priorSessionSymbolChrs=['a'],
-                             decisionMethod=DecisionType.DISTANCE,
+                             decisionMethod=DecisionType.FITNESS,
                              fixedLagCurrentSession=True,
                              ),
                         )
@@ -100,8 +107,13 @@ poses, keys = fgtools.GetPosesFromGraphEstimate(currentSession.values)
 scans = currentSession.scans
 cnt = 0
 totalCnt = 0
-MAX_COUNT = 0
+MAX_COUNT = 5
 startTime = time.time()
+
+if ENABLE_OPEN3D:
+    viz2 = LiveMapVisualizer(updater, window_name="Session 2 — Live Map")
+    viz2.start()
+
 for i, pose in enumerate(poses):
     currPose = gtsam.Pose3(gtsam.Rot3(pose[3], pose[4], pose[5], pose[6]), pose[:3])
     if i == 0:
@@ -115,15 +127,24 @@ for i, pose in enumerate(poses):
     if cnt >= MAX_COUNT: # or totalCnt > 560:
     # if True:
         cnt = 0
-        ax.clear()
-        # fgtools.plot_graph(updater.prior.graph, updater.prior.values, ax=ax, color_override=bag_colors[0], alpha=0.5)
-        # fgtools.plot_graph(updater.current.graph, updater.current.values, ax=ax, title="Testing Loop Closure in Graph", color_override=bag_colors[1], alpha=0.5)
-        fgtools.plot_graph(updater.combined.graph, updater.combined.values, ax=ax, title="Testing Combined Graph", changeColorBySymbols=True)
-        # ax.set_xlim(0, 100)
-        # ax.set_ylim(-200, -100)
-        plt.pause(0.05)
+        if ENABLE_MATPLOTLIB:
+            ax.clear()
+            # fgtools.plot_graph(updater.prior.graph, updater.prior.values, ax=ax, color_override=bag_colors[0], alpha=0.5)
+            # fgtools.plot_graph(updater.current.graph, updater.current.values, ax=ax, title="Testing Loop Closure in Graph", color_override=bag_colors[1], alpha=0.5)
+            fgtools.plot_graph(updater.combined.graph, updater.combined.values, ax=ax, title="Testing Combined Graph", changeColorBySymbols=True)
+            # ax.set_xlim(0, 100)
+            # ax.set_ylim(-200, -100)
+            plt.pause(0.05)
+        if ENABLE_OPEN3D and not viz2.update():
+            print("Open3D Failed: Session 2 window closed. Matplotlib will be used instead.")
+            viz2.close()
+            ENABLE_OPEN3D = False
+            ENABLE_MATPLOTLIB = True
     cnt += 1
     totalCnt += 1
+
+if ENABLE_OPEN3D:
+    viz2.close()
 
 print(f"Total time for second session: {time.time() - startTime}")
 
@@ -169,6 +190,11 @@ currentSession = session3
 poses, keys = fgtools.GetPosesFromGraphEstimate(currentSession.values)
 scans = currentSession.scans
 cnt = 0
+
+if ENABLE_OPEN3D:
+    viz3 = LiveMapVisualizer(updater, window_name="Session 3 — Live Map")
+    viz3.start()
+
 for i, pose in enumerate(poses):
     currPose = gtsam.Pose3(gtsam.Rot3(pose[3], pose[4], pose[5], pose[6]), pose[:3])
     if i == 0:
@@ -181,12 +207,21 @@ for i, pose in enumerate(poses):
 
     if cnt > 5:
         cnt = 0
-        ax.clear()
-        # fgtools.plot_graph(updater.prior.graph, updater.prior.values, ax=ax, color_override=bag_colors[0], alpha=0.5)
-        # fgtools.plot_graph(updater.current.graph, updater.current.values, ax=ax, title="Testing Loop Closure in Graph", color_override=bag_colors[1], alpha=0.5)
-        fgtools.plot_graph(updater.combined.graph, updater.combined.values, ax=ax, title="Testing Combined Graph", changeColorBySymbols=True)
-        plt.pause(0.05)
+        if ENABLE_MATPLOTLIB:
+            ax.clear()
+            # fgtools.plot_graph(updater.prior.graph, updater.prior.values, ax=ax, color_override=bag_colors[0], alpha=0.5)
+            # fgtools.plot_graph(updater.current.graph, updater.current.values, ax=ax, title="Testing Loop Closure in Graph", color_override=bag_colors[1], alpha=0.5)
+            fgtools.plot_graph(updater.combined.graph, updater.combined.values, ax=ax, title="Testing Combined Graph", changeColorBySymbols=True)
+            plt.pause(0.05)
+        if ENABLE_OPEN3D and not viz3.update():
+            print("Open3D Failed: Session 3 window closed. Matplotlib will be used instead.")
+            viz3.close()
+            ENABLE_OPEN3D = False
+            ENABLE_MATPLOTLIB = True
     cnt += 1
+
+if ENABLE_OPEN3D:
+    viz3.close()
 
 ax.clear()
 # fgtools.plot_graph(updater.prior.graph, updater.prior.values, ax=ax, color_override=bag_colors[0], alpha=0.5)

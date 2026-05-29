@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from base import DecisionType
+from policy.base import DecisionType
 
 @dataclass
 class Params:
@@ -10,7 +10,7 @@ class Params:
     minDistance: float | int = 20
 
     # Fitness policy
-    fitnessThreshold: float = 0.35
+    fitnessThreshold: float = 0.45
     fitnessHysteresisMargin: float = 0.05
 
     # ICP params
@@ -21,7 +21,7 @@ class Params:
     # Loop Closure params
     loopNoiseScale: float = 1
     loopPrevFrameSkip: int = 100
-    loopDistMax: int = 50
+    loopDistMax: int = 30
     loopSkipFrames: int = 0
     debugLoop: bool = False
 

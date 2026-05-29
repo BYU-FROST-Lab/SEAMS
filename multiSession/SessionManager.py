@@ -8,13 +8,13 @@ import open3d as o3d
 from scipy.spatial import KDTree
 
 # Local imports
-import FGVizHelpers as fgtools
+import common.FGVizHelpers as fgtools
 import gtsam
 from params import Params
-from customStructs import TreeData
+from common.customStructs import TreeData
 from metrics import Metrics
-from base import DecisionType, NodeDecision, NodeDecisionPolicy
-from naive import DistancePolicy, FitnessPolicy
+from policy.base import DecisionType, NodeDecision, NodeDecisionPolicy
+from policy.naive import DistancePolicy, FitnessPolicy
 
 class SessionManager:
     def __init__(self, filename:str|Path|None=None, loadGPS:bool=True, params:Params=Params()):
@@ -63,6 +63,9 @@ class SessionManager:
         self.priorSessionSymbols_ = self.params.priorSessionSymbolChrs
 
         self.sessionKeys: dict[str, list[int]] = {}
+
+        self.isInitialized_ = False
+        self.initializationCount = 0
 
         if filename is not None:
             self.LoadGraphAndValues(filename=str(filename), loadGPS=loadGPS)
@@ -236,6 +239,9 @@ class SessionManager:
     #         self.isam_.update()
     
     def UpdateDecisionState(self):
+        if not self.isInitialized_:
+            print("UpdateDecisionState: Waiting for initialization...")
+            return
         previousState = copy(self.decisionState)
         self.UpdatePriorTree()
         self.metrics.CalculateMetrics(
@@ -396,19 +402,10 @@ class SessionManager:
         assert len(self.pcds_.keys()) == len(self.currentEstimate_.keys()), "Number of PCDs must match number of values in the graph. Check to make sure you loaded values first."
 
 
-    def CreateGlobalPCD(self, color: tuple[float, float, float] | None = None) -> o3d.geometry.PointCloud:
+    def CreateGlobalPCD(self, color: tuple[float, float, float] | None = None, voxel_size: float | None = None) -> o3d.geometry.PointCloud:
         if not self.pcds_:
             raise Exception("Must load PCDs first before creating global point cloud")
-        
-        global_pcd = o3d.geometry.PointCloud()
-        for key in self.currentEstimate_.keys():
-            pcd = deepcopy(self.pcds_[key])
-            pcd.transform(self.currentEstimate_.atPose3(key).matrix())
-            global_pcd += pcd
-        
-        if color is not None:
-            global_pcd.paint_uniform_color(color)
-        return global_pcd
+        return fgtools.createGlobalPCD(self.pcds_, self.currentEstimate_, color=color, voxel_size=voxel_size)
 
     def AddFactor(self, factor: gtsam.gtsam.Factor, key:int|None = None, estimate: gtsam.gtsam.Pose3|None=None) -> None:
         self.graph_.add(factor)
@@ -513,6 +510,15 @@ class SessionManager:
             reg = self.LoopCheckGivenKeys(keysToSearch)
             if reg:
                 self.lastInterICPResult_ = reg
+                if not self.isInitialized_:
+                    if reg.fitness > 0.5:
+                        self.initializationCount += 1
+                        if self.initializationCount >= 2:
+                            self.isInitialized_ = True
+                            print("*** Initialized ***")
+                    else:
+                        self.initializationCount = 0
+                    
 
         
     
@@ -710,3 +716,7 @@ class SessionManager:
     @property
     def priorSessionSymbols(self) -> list[str]:
         return deepcopy(self.priorSessionSymbols_)
+    
+    @property
+    def isInitialized(self) -> bool:
+        return self.isInitialized_

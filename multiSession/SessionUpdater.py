@@ -9,7 +9,7 @@ import open3d as o3d
 
 # Local imports
 import gtsam
-from SessionManager import SessionManager
+from multiSession.SessionManager import SessionManager
 from params import Params
 
 

@@ -1,5 +1,5 @@
 import numpy as np
-import FGVizHelpers as fgtools
+import common.FGVizHelpers as fgtools
 import gtsam
 import matplotlib.pyplot as plt
 import copy

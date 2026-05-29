@@ -1079,6 +1079,58 @@ def GetPosesFromGraphEstimate(values: gtsam.Values) -> tuple[np.ndarray, list[in
 
     return np.asarray(pose_list), key_list
 
+
+def createGlobalPCD(
+    pcds: dict[int, o3d.geometry.PointCloud],
+    values: gtsam.Values,
+    keys: list[int] | None = None,
+    color: tuple[float, float, float] | None = None,
+    voxel_size: float | None = None,
+) -> o3d.geometry.PointCloud:
+    '''
+    Merge per-pose point clouds into a single world-frame point cloud.
+
+    :param pcds: Dict mapping key -> local-frame PointCloud.
+    :param values: GTSAM Values containing Pose3 estimates keyed by the same keys.
+    :param keys: Subset of keys to merge. Defaults to all keys in `values`.
+    :param color: Optional uniform RGB color applied after merging, e.g. (0.6, 0.6, 0.6).
+    :param voxel_size: If provided, voxel-downsample the merged cloud before returning.
+    '''
+    if keys is None:
+        keys = list(values.keys())
+
+    global_pcd = o3d.geometry.PointCloud()
+    for key in keys:
+        if key not in pcds:
+            continue
+        pcd = copy.deepcopy(pcds[key])
+        pcd.transform(values.atPose3(key).matrix())
+        global_pcd += pcd
+
+    if color is not None:
+        global_pcd.paint_uniform_color(color)
+    if voxel_size is not None:
+        global_pcd = global_pcd.voxel_down_sample(voxel_size)
+
+    return global_pcd
+
+
+def getPriorKeys(values: gtsam.Values, currentSessionSymbol: str) -> list[int]:
+    '''Return all keys in `values` that do not belong to the current session symbol.'''
+    return [k for k in values.keys() if chr(gtsam.Symbol(k).chr()) != currentSessionSymbol]
+
+
+def getFixedLagKeys(sessionKeys: dict[str, list[int]], currentSessionSymbol: str) -> list[int]:
+    '''Return the sliding-window keys for the current session (copy).'''
+    return list(sessionKeys.get(currentSessionSymbol, []))
+
+
+def getCurrentScanKey(sessionKeys: dict[str, list[int]], currentSessionSymbol: str) -> int | None:
+    '''Return the most recent key in the fixed-lag window, or None if empty.'''
+    keys = sessionKeys.get(currentSessionSymbol, [])
+    return keys[-1] if keys else None
+
+
 # Copied from https://www.open3d.org/docs/0.19.0/tutorial/pipelines/icp_registration.html as it is given as part of their example
 def draw_registration_result(source, target, transformation, title:str=""):
     source_temp = deepcopy(source)

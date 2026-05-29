@@ -1,4 +1,4 @@
-from base import NodeDecisionPolicy, NodeDecision
+from policy.base import NodeDecisionPolicy, NodeDecision
 from metrics import Metrics
 import numpy as np
 from params import Params

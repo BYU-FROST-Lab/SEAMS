@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=82.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multiSession"
+version = "0.1.0"
+description = "Multisession development python package"
+readme = "README.md"
+requires-python = ">=3.12"
+
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "open3d",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["common*", "metrics*", "policy*", "params*", "multiSession*", "sparcification*"]
+exclude = ["tests*", "environment*",]
