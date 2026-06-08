@@ -1,13 +1,14 @@
 services:
   gtsam_test:
     build:
-      context: ..
-      dockerfile: docker/dockerfile
+      context: .
+      dockerfile: dockerfile
     image: gtsam_test
     container_name: gtsam_test
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix # Needed to display RViz within the container
       - ${HOME}/blocklio/:/root/blocklio/
+      - ${HOME}/gtsam/gtsam/nonlinear:/home/gtsam/gtsam/nonlinear
       # - ${HOME}/data_byu/bags:/root/data_byu
       # - ${HOME}/data_sets:/root/data_sets
       - ${HOME}/yride_env_setup:/yride_env_setup:ro
@@ -22,6 +23,6 @@ services:
     network_mode: host
     stdin_open: true
     tty: true
-    working_dir: /root/blocklio
+    working_dir: /home/gtsam
     command: ["bash"]
     

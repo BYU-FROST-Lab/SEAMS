@@ -11,10 +11,12 @@ from scipy.spatial import KDTree
 import common.FGVizHelpers as fgtools
 import gtsam
 from params import Params
-from common.customStructs import TreeData
+from common.customTypes import TreeData, DecisionType, NodeDecision
 from metrics import Metrics
-from policy.base import DecisionType, NodeDecision, NodeDecisionPolicy
-from policy.naive import DistancePolicy, FitnessPolicy
+from policy.geometric import DistancePolicy
+from policy.registration import FitnessPolicy
+from policy.graphTheoretic import TwoStepConnectivityPolicy
+from policy.probabilistic import RelativeCovariancePolicy
 
 class SessionManager:
     def __init__(self, filename:str|Path|None=None, loadGPS:bool=True, params:Params=Params()):
@@ -39,21 +41,23 @@ class SessionManager:
         self.tree_: dict[str, KDTree] = {}
 
 
-        self.betweenSessionLoopClosureIndices_: dict[int, list[int]] = {}
+        self.temporaryLoopClosureIndices_: dict[int, list[int]] = {}
 
-        self.decisionState = NodeDecision.LOCALIZE
-        if self.params.decisionMethod == DecisionType.DISTANCE:
+        self.decisionState = NodeDecision.INITIALIZE
+        if self.params.policyType == DecisionType.DISTANCE:
             self.decider = DistancePolicy(self.params)
-        elif self.params.decisionMethod == DecisionType.FITNESS:
+        elif self.params.policyType == DecisionType.FITNESS:
             self.decider = FitnessPolicy(self.params)
+        elif self.params.policyType == DecisionType.TWO_STEP_VALIDATION:
+            self.decider = TwoStepConnectivityPolicy(self.params)
+        elif self.params.policyType == DecisionType.RELATIVE_COVARIANCE:
+            self.decider = RelativeCovariancePolicy(self.params)
         else:
-            print("SessionManager: Invalid decision policy chosen.")
-            exit()
-        self.metrics = Metrics(self.params.decisionMethod)
+            raise ValueError(f"SessionManager: Invalid decision policy chosen. {self.params.policyType}")
+        
+        self.metrics = Metrics(self.params.policyType)
 
-        self.priorTree_ = None
         self.addNodesToPrior_ = True
-        self.addMultiSessionToPrior_ = False
 
         self.loopKeysToIgnore: set[int]  = set()
         self.lastInterICPResult_ = None
@@ -78,16 +82,16 @@ class SessionManager:
         self.SetGraphAndValsToOrig()
         if symbolChar:
             self.RenameKeys(symbolChar)
+        self.UpdatePriorTree()
 
-    def SetGraphAndValues(self, graph: gtsam.gtsam.NonlinearFactorGraph, values:gtsam.gtsam.Values, symbolChar:str='', optimize:bool=False) -> None:
+    def SetGraphAndValues(self, graph: gtsam.gtsam.NonlinearFactorGraph, values:gtsam.gtsam.Values, symbolChar:str='') -> None:
         self.orig_graph_ = deepcopy(graph)
         self.orig_values_ = deepcopy(values)
         self.SetGraphAndValsToOrig()
         if symbolChar:
             self.RenameKeys(symbolChar)
+        self.UpdatePriorTree()
         
-        if optimize:
-            self.UpdateISAM2()
 
     def SetGraphAndValsToOrig(self):
         self.graph_ = deepcopy(self.orig_graph_)
@@ -123,23 +127,19 @@ class SessionManager:
 
             for i in range(len(new_indices)):
                 f = self.graph_.at(i)
-                if self.IsBetweenSessionFactor(f):
-                    added = False
+                if self.IsTemporaryLoopClosureFactor(f):
                     for k in f.keys():
                         if gtsam.Symbol(k).chr() == ord(self.currSessionSymbol_):
-                            if added:
-                                raise Warning("Code issue. A factor was said to be between session but has more than one current session keys in it")
-                            if k in self.betweenSessionLoopClosureIndices_:
-                                self.betweenSessionLoopClosureIndices_[k].append(new_indices[i])
+                            if k in self.temporaryLoopClosureIndices_:
+                                self.temporaryLoopClosureIndices_[k].append(new_indices[i])
                             else:
-                                self.betweenSessionLoopClosureIndices_[k] = [new_indices[i]]
-                            added = True
+                                self.temporaryLoopClosureIndices_[k] = [new_indices[i]]
 
         self.graph_.resize(0)
         self.values_.clear()
 
         if self.params.fixedLagCurrentSession:
-            if self.decisionState == NodeDecision.LOCALIZE:
+            if self.decisionState == NodeDecision.LOCALIZE or self.decisionState == NodeDecision.INITIALIZE or removeAllCurrent:
 
                 keysToRemove = self.DecrementSize(fastlist=True, removeAll=removeAllCurrent)
             else:
@@ -154,15 +154,29 @@ class SessionManager:
 
 
                     for k in keysToRemove:
-                        if k in self.betweenSessionLoopClosureIndices_:
-                            indices_to_remove += self.betweenSessionLoopClosureIndices_.pop(k) # Removes the key from the dictionary
+                        if k in self.temporaryLoopClosureIndices_:
+                            indices_to_remove += self.temporaryLoopClosureIndices_.pop(k) # Removes the key from the dictionary
 
                     for k in keysToRemove:
                         constrained_keys.insert2(k, 0)
 
+                    # # If reseting the length of the fixedLag, update the prior to be the current value at that point
+                    # # if removeAllCurrent:
+                    # key = self.sessionKeys[self.currSessionSymbol_][0]
+                    # cov = self.isam_.marginalCovariance(key)
+                    # assert np.shape(cov) == (6,6)
+                    # newPrior = gtsam.PriorFactorPose3(key, self.currentEstimate_.atPose3(key), gtsam.noiseModel.Gaussian.Covariance(cov))
+
                     self.isam_.update(gtsam.NonlinearFactorGraph(), gtsam.Values(), indices_to_remove, constrained_keys)
                     self.isam_.update()
-                    self.isam_.marginalizeLeaves(keysToRemove)
+                    marginalIndices, deletedIndices = self.isam_.marginalizeLeavesWithIndices(keysToRemove)
+                    assert len(marginalIndices) == 1, "More than one LinearContainerFactor was created by marginalizeLeaves"
+
+                    # # if removeAllCurrent:
+                    # tmpGraph = gtsam.NonlinearFactorGraph()
+                    # tmpGraph.add(newPrior)
+                    # self.isam_.update(tmpGraph, gtsam.Values(), marginalIndices)
+                    
 
         self.currentEstimate_ = self.isam_.calculateEstimate()
 
@@ -182,13 +196,11 @@ class SessionManager:
         # for k in self.sessionKeys[self.currentSessionSymbol]:
         #     if k in self.currentEstimate_.keys():
         #         return
-            
-        self.addMultiSessionToPrior_ = False
 
         currGraph = fgtools.cleanFactorGraph(self.isam_)
         indicesToPrior = []
 
-        for v in self.betweenSessionLoopClosureIndices_.values():
+        for v in self.temporaryLoopClosureIndices_.values():
             indicesToPrior += v
         
         addBetweenLastAddToPriorKey = False
@@ -223,14 +235,15 @@ class SessionManager:
                     graph.add(f.rekey(new_keys)) 
 
         
-        graph, values = self.RenameKeys(self.addToPriorSymbol_, graph, values, updateIsam2=True, resetIsam2=False)
+        graph, values = self.RenameKeys(self.addToPriorSymbol_, graph, values, updateIsam2=False, resetIsam2=False)
 
-        # self.graph_.push_back(graph)
-        # self.values_.insert(values)
-        # self.UpdateISAM2(reset=False, removeAllCurrent=True)
+        self.graph_.push_back(graph)
+        self.values_.insert(values)
+        self.UpdateISAM2(reset=False, removeAllCurrent=True)
+
         _, keys = fgtools.GetPointsFromGraphEstimate(values, symbolChr=self.addToPriorSymbol_)
         self.loopKeysToIgnore |= set(keys)
-        self.priorTree_ = None
+        self.UpdatePriorTree()
 
     # def Optimize(self, iterations:int=1):
     #     self.isam_.update()
@@ -240,28 +253,33 @@ class SessionManager:
     
     def UpdateDecisionState(self):
         if not self.isInitialized_:
-            print("UpdateDecisionState: Waiting for initialization...")
+            print("UpdateDecisionState: Waiting for Scan Matching initialization...")
             return
         previousState = copy(self.decisionState)
-        self.UpdatePriorTree()
+        if self.priorTree_ is None:
+            raise Exception("PriorTree_ can't be none to calculate metrics")
         self.metrics.CalculateMetrics(
             self.isam_, 
             self.currentEstimate_, 
             self.priorTree_, 
             self.sessionKeys[self.currSessionSymbol_][-1],
             self.lastInterICPResult_,
-            self.pcds_
+            self.pcds_,
+            self.decisionState,
+            self.sessionKeys[self.currentSessionSymbol]
             )
         self.decisionState = self.decider.DetermineDecisionState(self.metrics)
 
-        if previousState == NodeDecision.MAP and self.decisionState == NodeDecision.LOCALIZE:
-            self.addMultiSessionToPrior_ = True
+        if self.decisionState == NodeDecision.INITIALIZE:
+            print(f"Waiting for policy initialization...")
         
-        if self.addMultiSessionToPrior_:
-            self.AddCurrentToPrior()
-
         if previousState != self.decisionState:
-            print(f"DecisionState: {"Localize" if self.decisionState == NodeDecision.LOCALIZE else "Map"}")
+            print(f"DecisionState: {"Localize" if self.decisionState == NodeDecision.LOCALIZE else ("Map" if self.decisionState == NodeDecision.MAP else "Initialize")}")
+
+        if previousState == NodeDecision.LOCALIZE and self.decisionState == NodeDecision.MAP:
+            self.UpdateISAM2(removeAllCurrent=True)
+        elif previousState == NodeDecision.MAP and self.decisionState == NodeDecision.LOCALIZE:
+            self.AddCurrentToPrior()
 
     def RenameKeys(self, 
                    chars: str|list[str]='', 
@@ -411,7 +429,7 @@ class SessionManager:
         self.graph_.add(factor)
 
         if key is not None and estimate is not None:
-            self.values_.insert_pose3(key, estimate)
+            self.values_.insert(key, estimate)
 
         self.UpdateISAM2()
 
@@ -456,12 +474,10 @@ class SessionManager:
         self.pcds_ = deepcopy(scans)
     
     def UpdatePriorTree(self):
-        if self.priorTree_:
-            return
         points, keys = fgtools.GetPointsFromGraphEstimate(self.currentEstimate_, self.currSessionSymbol_, allOthers=True)
 
         if not points: # If points is empty
-            print("Warning: Can't perform inter session loopclosure because prior Session data points is empty. Please check symbol name provided in params")
+            print("Warning: Can't updatePriorTree because data points is empty.")
             return
         
         if len(self.loopKeysToIgnore):
@@ -481,13 +497,13 @@ class SessionManager:
         '''
         # Intra loop closures (same session)
         if intra:
-            if self.Size(self.currSessionSymbol_) > self.params.loopPrevFrameSkip + 1 and self.decisionState == NodeDecision.MAP:
+            if self.Size(self.currSessionSymbol_) > self.params.LoopClosure.prevFrameSkip + 1 and self.decisionState == NodeDecision.MAP:
                 points, keys = fgtools.GetPointsFromGraphEstimate(self.currentEstimate_, self.currSessionSymbol_)
                 points = np.asarray(points)
-                self.tree_[self.currSessionSymbol_] = KDTree(points[:-self.params.loopPrevFrameSkip,:]) # Don't put last 10 poses in the tree
-                distances, indices = self.tree_[self.currSessionSymbol_].query(points[-1,:], k=5, distance_upper_bound=self.params.loopDistMax) # Look for the 5 closest poses given the distance is less than 30
+                self.tree_[self.currSessionSymbol_] = KDTree(points[:-self.params.LoopClosure.prevFrameSkip,:]) # Don't put last 10 poses in the tree
+                distances, indices = self.tree_[self.currSessionSymbol_].query(points[-1,:], k=5, distance_upper_bound=self.params.LoopClosure.distMax) # Look for the 5 closest poses given the distance is less than 30
 
-                keysToSearch = np.asarray(keys)[indices[distances < self.params.loopDistMax]]
+                keysToSearch = np.asarray(keys)[indices[distances < self.params.LoopClosure.distMax]]
                 self.LoopCheckGivenKeys(keysToSearch)
 
         # Inter loop closures
@@ -496,17 +512,16 @@ class SessionManager:
             if len(self.loopKeysToIgnore):
                 tmpPoints, tmpKeys = fgtools.GetPointsFromGraphEstimate(self.currentEstimate_, keys=list(self.loopKeysToIgnore))
                 tmpTree = KDTree(tmpPoints)
-                tmpIndices = tmpTree.query_ball_point(pose.translation(), r=self.params.loopDistMax)
+                tmpIndices = tmpTree.query_ball_point(pose.translation(), r=self.params.LoopClosure.distMax)
                 size = len(self.loopKeysToIgnore)
                 self.loopKeysToIgnore &= set(np.asarray(tmpKeys)[tmpIndices])
                 if len(self.loopKeysToIgnore) != size:
-                    self.priorTree_ = None
-            self.UpdatePriorTree()
-            # distances, indices = self.priorTree_.tree.query(pose.translation(), k=5, distance_upper_bound=self.params.loopDistMax) # Look for the 5 closest poses given the distance is less than 30
-            distances, indices = self.priorTree_.tree.query(pose.translation()) # Look for the 5 closest poses given the distance is less than 30
+                    self.UpdatePriorTree()
+            distances, indices = self.priorTree_.tree.query(pose.translation(), k=self.params.LoopClosure.maxPossibleConnections, distance_upper_bound=self.params.LoopClosure.distMax) # Look for the 5 closest poses given the distance is less than 30
+            # distances, indices = self.priorTree_.tree.query(pose.translation()) # Look for the 5 closest poses given the distance is less than 30
             keys = deepcopy(self.priorTree_.keys)
 
-            keysToSearch = np.asarray(keys)[indices[distances < self.params.loopDistMax]]
+            keysToSearch = np.asarray(keys)[indices[distances < self.params.LoopClosure.distMax]]
             reg = self.LoopCheckGivenKeys(keysToSearch)
             if reg:
                 self.lastInterICPResult_ = reg
@@ -527,25 +542,30 @@ class SessionManager:
             return None
         
         currKey = self.sessionKeys[self.currSessionSymbol_][-1]
+
+        num_connections = 0
+        firstReg = None
         
         for key in keysToSearch:
 
             pcSource = self.FindNearKeyFrames(currKey, 0, -1)
-            pcTarget = self.FindNearKeyFrames(key, self.params.icpNearKeyFrames, -1)
+            pcTarget = self.FindNearKeyFrames(key, self.params.ICP.nearKeyFrames, -1)
 
             poseTarget = self.currentEstimate_.atPose3(key)
 
             reg = fgtools.ScanMatch(pcSource, pcTarget, np.eye(4), showResult=False)
+            if not firstReg:
+                firstReg = deepcopy(reg)
+
             fit = reg.fitness
             transFinal = reg.transformation
 
-            if fit > self.params.icpFitnessThreshold:
-                # ScanMatch(pcSource, pcTarget, np.eye(4), showResult=True)
+            if fit > self.params.ICP.fitnessThreshold:
                 cs = gtsam.Symbol(currKey)
                 ts = gtsam.Symbol(key)
-                if self.params.debugLoop:
+                if self.params.LoopClosure.debug:
                     print(f"Loop Found between keys {chr(cs.chr()) if cs.chr() else ''}{cs.index()} and {chr(ts.chr()) if ts.chr() else ''}{ts.index()}")
-                loopNoise = gtsam.noiseModel.Diagonal.Variances(np.asarray([(1-fit) * self.params.loopNoiseScale] * 6))
+                loopNoise = gtsam.noiseModel.Diagonal.Variances(np.asarray([(1-fit) * self.params.LoopClosure.noiseScale] * 6))
 
                 Twrong = self.currentEstimate_.atPose3(currKey).matrix()
 
@@ -553,9 +573,12 @@ class SessionManager:
                 posefixed = gtsam.Pose3(Tfixed)
                 # draw_registration_result(self.pcds_[currKey], pcTarget, Tfixed, "Fixed Tranform")
                 self.AddFactor(gtsam.BetweenFactorPose3(currKey, key, posefixed.between(poseTarget), loopNoise))
-                break
+
+                num_connections += 1
+                if num_connections >= self.params.LoopClosure.maxPossibleConnections:
+                    break
         
-        return reg
+        return firstReg
 
     
     def FindNearKeyFrames(self, key:int, searchNum:int, loop_index:int, downsample:bool=False) -> o3d.geometry.PointCloud:
@@ -620,7 +643,7 @@ class SessionManager:
         if char is None:
             char = self.currSessionSymbol_
 
-        if not char in self.sessionKeys or len(self.sessionKeys[char]) <= finalSize:
+        if  not char in self.sessionKeys or (not removeAll and len(self.sessionKeys[char]) <= finalSize):
             return gtsam.KeyList()
         
         if removeAll:
@@ -642,24 +665,21 @@ class SessionManager:
         
         return keysToRemove
     
-    def IsBetweenSessionFactor(self, factor: gtsam.Factor) -> bool:
+    def IsTemporaryLoopClosureFactor(self, factor: gtsam.Factor) -> bool:
         '''
         Check to see if a factor is between the current session and a previous session
         '''
-        chars = set([gtsam.Symbol(k).chr() for k in factor.keys()])
-
-        if ord(self.currSessionSymbol_) in chars:
-            return chars != {ord(self.currSessionSymbol_)} # If chars doesn't just contain the current session, then it's a between session factor
-        else:
+        if len(factor.keys()) != 2:
             return False
-        # for k in factor.keys():
-        #     s = gtsam.Symbol(k)
-        #     if not firstSymbol:
-        #         firstSymbol = s.chr()
-        #     else:
-        #         if s.chr() != firstSymbol:
-        #             return True
-        # return False
+        s1 = gtsam.Symbol(factor.keys()[0])
+        s2 = gtsam.Symbol(factor.keys()[1])
+
+        if s1.chr() == ord(self.currSessionSymbol_) or s2.chr() == ord(self.currSessionSymbol_):
+            if s1.chr() != s2.chr():
+                    return True
+            else:
+                return abs(s1.index() - s2.index()) != 1
+        return False
 
     def Finalize(self):
         '''

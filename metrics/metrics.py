@@ -1,59 +1,80 @@
 import numpy as np
 import open3d as o3d
-from policy.base import DecisionType
 from scipy.spatial import KDTree
 import gtsam
-from common.customStructs import TreeData
+from common.customTypes import TreeData, DecisionType, NodeDecision
+from common.weighted_pose_graph_class import WeightedPoseGraph
+from common.FGVizHelpers import cleanFactorGraph, getRelativeCov
+from params import Params
+from copy import copy, deepcopy
 
 class Metrics:
-    def __init__(self, method: DecisionType|list[DecisionType]):
+    def __init__(self, method: DecisionType|list[DecisionType], params:Params=Params()):
         if isinstance(method, DecisionType):
             self.method_ = [method]
         else:
             self.method_ = method
+
+        self.params = params
 
         self.closestDistance = np.inf
         self.lastInterFitness = np.inf
 
 
     def CalculateMetrics(self, 
-                         isam: gtsam.NonlinearFactorGraph,
+                         isam: gtsam.ISAM2,
                          values: gtsam.Values,
-                         treeData: TreeData|None, 
+                         priorTreeData: TreeData, 
                          lastPoseKey: int,
                          lastInterICPResult: o3d.pipelines.registration.RegistrationResult|None,
                          pcds: dict[int, o3d.geometry.PointCloud],
-
+                         currentState: NodeDecision,
+                         currentKeys: list[int],
                          ):
+        
+        self.currentState = currentState
+        self.lastPoseKey = lastPoseKey
+
         if DecisionType.DISTANCE in self.method_:
-            if treeData is not None:
-                self.GetClosestKey(treeData, values.atPose3(lastPoseKey))
+            if priorTreeData is not None:
+                self.GetClosestKey(priorTreeData, values.atPose3(lastPoseKey))
             else:
                 self.closestDistance = np.inf
+
         if DecisionType.FITNESS in self.method_:
-            # self.CalcFitnessScore(values, lastPoseKey, treeData, pcds)
             if lastInterICPResult is not None:
                 self.lastInterFitness = lastInterICPResult.fitness
             else:
                 self.lastInterFitness = np.inf
-            print(f"Metrics: FitnessScore = {self.lastInterFitness}")
+            if self.params.FitnessPolicy.debug:
+                print(f"Metrics: FitnessScore = {self.lastInterFitness}")
+
+        if DecisionType.TWO_STEP_VALIDATION in self.method_:
+            self.gtsamGraph = cleanFactorGraph(isam)
+            self.gtsamValues = isam.calculateEstimate()
+            keysToUse = priorTreeData.keys.copy()
+            if len(currentKeys) > self.params.fixedLagKeepFrames:
+                keysToUse += currentKeys[-self.params.fixedLagKeepFrames:]
+            else:
+                keysToUse += currentKeys
+            self.CreateNXGraph(keysToUse=keysToUse)
+            self.ComputeL()
+
+        if DecisionType.RELATIVE_COVARIANCE in self.method_:
+            key = self.GetClosestKey(priorTreeData, values.atPose3(lastPoseKey))
+            jointMarginal = isam.jointMarginalCovariance([lastPoseKey, key])
+            self.relCov = getRelativeCov(values.atPose3(lastPoseKey), values.atPose3(key), jointMarginal.fullMatrix())
 
 
-    def GetClosestKey(self, treeData: TreeData, pose: gtsam.Pose3):
-        d, i = treeData.tree.query(pose.translation())
+    def GetClosestKey(self, priorTreeData: TreeData, pose: gtsam.Pose3):
+        d, i = priorTreeData.tree.query(pose.translation())
         self.closestDistance = d
+        self.closestPriorKey = priorTreeData.keys[i]
 
-        return treeData.keys[i]
+        return priorTreeData.keys[i]
 
+    def CreateNXGraph(self, keysToUse:list[int]=[]):
+        self.wpg = WeightedPoseGraph(self.gtsamGraph, self.gtsamValues, keysToUse=keysToUse)
 
-    # def CalcFitnessScore(self, values, lastPoseKey, treeData, pcds):
-
-    #     pose = values.atPose3(lastPoseKey)
-    #     self.UpdatePriorTree()
-    #     distances, indices = self.priorTree_.tree.query(pose.translation(), k=5, distance_upper_bound=self.params.loopDistMax) # Look for the 5 closest poses given the distance is less than 30
-    #     keys = deepcopy(self.priorTree_.keys)
-
-    #     keysToSearch = np.asarray(keys)[indices[distances < self.params.loopDistMax]]
-    #     reg = self.LoopCheckGivenKeys(keysToSearch)
-    #     if reg:
-    #         self.lastInterICPResult_ = reg
+    def ComputeL(self):
+        pass

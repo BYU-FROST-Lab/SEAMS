@@ -18,32 +18,35 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
     wget \
     doxygen \
+    patchelf \
+    unzip \
     git
 
 # Download GTSAM
-ARG GTSAM_VERSION="4.3a1"
+ARG GTSAM_VERSION="develop"
 RUN cd /home && \
-    git clone -b ${GTSAM_VERSION} https://github.com/borglab/gtsam.git \
-    mkdir gtsam && \
-    tar -zxf gtsam.tar.gz -C gtsam --strip-components 1 && \
-    rm gtsam.tar.gz
+    git clone -b ${GTSAM_VERSION} https://github.com/borglab/gtsam.git
 
 # Install python package prereqs and any desired libraries
 RUN pip install -r /home/gtsam/python/dev_requirements.txt && \
-    pip install matplotlib ipython scipy
+    pip install matplotlib ipython scipy wheel setuptools auditwheel
 
 # Install/Setup GTSAM for both C++ and Python
 #-DGTSAM_PYTHON_VERSION=3.12
 RUN cd /home/gtsam && \
     mkdir build && \
     cd build && \
-    cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DGTSAM_BUILD_PYTHON=1 && \
-    make install -j4 && \
-    # make python-install
-    cd python && \
-    pip install . && \
-    ldconfig
+    cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DGTSAM_BUILD_PYTHON=ON -DPYTHON_EXECUTABLE=$(which python3)
+    # make install -j4 && \
+    # # make python-install
+    # cd python && \
+    # pip install . && \
+    # ldconfig
 
-# Copy local files to container
-WORKDIR /root
+# --- Source Custom Environment ---
+RUN echo "if [ -f /yride_env_setup/custom_env.sh ]; then" >> ~/.bashrc && \
+    echo "  source /yride_env_setup/custom_env.sh" >> ~/.bashrc && \
+    echo "fi" >> ~/.bashrc
+
+WORKDIR /home/gtsam
 

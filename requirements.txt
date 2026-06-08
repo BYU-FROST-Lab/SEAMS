@@ -10,3 +10,7 @@ open3d
 # Used by sparcification/NFR.py
 networkx
 cvxpy
+
+
+# Possibly needed. Still under test
+shapely

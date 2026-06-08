@@ -20,7 +20,7 @@ class SessionUpdater:
         self.currentSession_ = SessionManager()
 
         self.combinedSession_ = SessionManager(params=params)
-        self.combinedSession_.SetGraphAndValues(priorSession.graph, priorSession.values, optimize=True)
+        self.combinedSession_.SetGraphAndValues(priorSession.graph, priorSession.values)
         self.combinedSession_.SetPointClouds(self.priorSession_.scans)
         self.lastPose_ = None
         self.initialized_ = False
@@ -80,7 +80,7 @@ class SessionUpdater:
         self.combinedSession_.AddPointCloud(key, pointCloud)
         
         self.loopCnt_ += 1
-        if self.loopCnt_ > self.params.loopSkipFrames:
+        if self.loopCnt_ > self.params.LoopClosure.skipFrames:
             self.loopCnt_ = 0
             # self.currentSession_.CheckLoopClosure(inter=False)
 

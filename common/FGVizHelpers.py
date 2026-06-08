@@ -85,7 +85,7 @@ def add_generic_prior(key , graph: gtsam.gtsam.NonlinearFactorGraph, values: gts
 
     :return graph: New graph with added prior on key
     """
-    prior_noise = gtsam.noiseModel.Diagonal.Sigmas([1e-6]*6)
+    prior_noise = gtsam.noiseModel.Diagonal.Sigmas(np.array([1e-6]*6))
     graph.addPriorPose3(key, values.atPose3(key), prior_noise)
     print("Added generic prior to key {}".format(key))
     return graph
@@ -266,7 +266,7 @@ def plot_isam_graph(isam: gtsam.ISAM2):
     curr_graph = isam.getFactorsUnsafe()
     plot_graph(curr_graph, curr_est)
 
-def plot_graph_covariances(keys, graph, values, ax, subset='xy', n_std=3.0, **kwargs):
+def plot_graph_covariances(keys: list[int], graph, values, ax, subset='xy', n_std=3.0, **kwargs):
     try:
         marginals = gtsam.Marginals(graph, values)
     except Exception as e:
@@ -490,7 +490,7 @@ def isBlockCovSmall(marginals: gtsam.Marginals, poses, internalThreshold: Thresh
     for i in range(len(keys_to_check) - 1):
         # Global Covariance
         iCov = marginals.marginalCovariance(keys_to_check[i])
-        det_i = np.linalg.det(iCov[:3,:3]) # FIXME: GTSAM translation is the lower right block not the upper left block. Liosam initializes wrong
+        det_i = np.linalg.det(iCov[:3,:3])
         iVar = np.diag(iCov)
         if iVar[0] > globalThreshold.x or iVar[1] > globalThreshold.y or iVar[2] > globalThreshold.z or det_i > globalThreshold.det():
             print(f"Global covariance too big: key \"{keys_to_check[i]}\"")
@@ -506,7 +506,7 @@ def isBlockCovSmall(marginals: gtsam.Marginals, poses, internalThreshold: Thresh
             jointCov = marginals.jointMarginalCovariance([keys_to_check[i], keys_to_check[j]]).fullMatrix()
             # print("Joint covariance:\n", jointCov)
             relCov = getRelativeCov(poses[keys_to_check[i]], poses[keys_to_check[j]], jointCov)
-            det_rel = np.linalg.det(relCov[:3,:3]) # FIXME: GTSAM translation is the lower right block not the upper left block. Liosam initializes wrong
+            det_rel = np.linalg.det(relCov[:3,:3])
             relVar = np.diag(relCov)
             if relVar[0] > internalThreshold.x or relVar[1] > internalThreshold.y or relVar[2] > internalThreshold.z or det_rel > internalThreshold.det():
                 print(f"Relative covariance too big between keys \"{keys_to_check[i]}\" and \"{keys_to_check[j]}\"")
@@ -1133,8 +1133,8 @@ def getCurrentScanKey(sessionKeys: dict[str, list[int]], currentSessionSymbol: s
 
 # Copied from https://www.open3d.org/docs/0.19.0/tutorial/pipelines/icp_registration.html as it is given as part of their example
 def draw_registration_result(source, target, transformation, title:str=""):
-    source_temp = deepcopy(source)
-    target_temp = deepcopy(target)
+    source_temp = copy.deepcopy(source)
+    target_temp = copy.deepcopy(target)
     source_temp.paint_uniform_color([1, 0.706, 0])
     target_temp.paint_uniform_color([0, 0.651, 0.929])
     source_temp.transform(transformation)
@@ -1152,7 +1152,6 @@ def ScanMatch(
         trans_init:np.ndarray = np.eye(4), 
         threshold:float = 0.02, 
         showResult:bool = False,
-        returnFullresult:bool=False
         ) -> o3d.pipelines.registration.RegistrationResult:
     '''
     Inputs:

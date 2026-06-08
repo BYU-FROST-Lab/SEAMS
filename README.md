@@ -54,5 +54,7 @@ Open the repo root as the workspace folder so these relative paths resolve. Relo
 To run `tests/Tests.ipynb` or `sparcification/testNFR.ipynb`, install Jupyter in your environment:
 
 ```bash
-pip install jupyter ipykernel
+pip install jupyter ipykernel ipympl
 ```
+
+You may need to reload the window or restart the kernel.
