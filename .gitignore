@@ -1,6 +1,8 @@
 
 .vscode/
 .codex/
+*.ini
+results/
 
 
 # Byte-compiled / optimized / DLL files

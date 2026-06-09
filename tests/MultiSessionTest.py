@@ -18,6 +18,7 @@ from multiSession.SessionManager import SessionManager
 from params import Params
 from common.customTypes import DecisionType
 from common.LiveMapVisualizer import LiveMapVisualizer
+from common.kissicp_odom import KissICPOdom
 
 # ------------------------------------------------------------
 # Visualization flags
@@ -95,7 +96,7 @@ updater = SessionUpdater(priorSession,
                              rekeyPrior=True, 
                             #  currSessionSymbolChr='b',
                             #  priorSessionSymbolChrs=['a'],
-                             policyType=DecisionType.RELATIVE_COVARIANCE,
+                             policyType=DecisionType.DISTANCE,
                              fixedLagCurrentSession=True,
                              ),
                         )
@@ -110,22 +111,30 @@ totalCnt = 0
 MAX_COUNT = 5
 startTime = time.time()
 
+odom = KissICPOdom(directory2 / "Scans")
+
 if ENABLE_OPEN3D:
     viz2 = LiveMapVisualizer(updater, window_name="Session 2 — Live Map")
     viz2.start()
 
 for i, pose in enumerate(poses):
-    currPose = gtsam.Pose3(gtsam.Rot3(pose[3], pose[4], pose[5], pose[6]), pose[:3])
     if i == 0:
-        relPose = None
-    else:
-        tmpPose = poses[i-1]
-        prevPose = gtsam.Pose3(gtsam.Rot3(tmpPose[3], tmpPose[4], tmpPose[5], tmpPose[6]), tmpPose[:3])
-        relPose = prevPose.between(currPose)
+        currPose = gtsam.Pose3(gtsam.Rot3(pose[3], pose[4], pose[5], pose[6]), pose[:3])
+        print(currPose)
+        odom.set_initial_pose(currPose)
+    #     relPose = None
+    # else:
+    #     tmpPose = poses[i-1]
+    #     prevPose = gtsam.Pose3(gtsam.Rot3(tmpPose[3], tmpPose[4], tmpPose[5], tmpPose[6]), tmpPose[:3])
+    #     relPose = prevPose.between(currPose)
+    currPose, relPose = odom.process_next_keyframe()
+    if i == 0:
+        print(currPose)
     if totalCnt == 231:
         pass
-    updater.AddOdomKeyFrame(pose, scans[keys[i]], relPose)
+    updater.AddOdomKeyFrame(currPose, scans[keys[i]], relPose)
 
+    # odom.update_last_pose(updater.combined.values.atPose3(updater.combined.values.keys()[-1]))
     if cnt >= MAX_COUNT: # or totalCnt > 225:
     # if True:
         cnt = 0
@@ -133,8 +142,9 @@ for i, pose in enumerate(poses):
             ax.clear()
             # fgtools.plot_graph(updater.prior.graph, updater.prior.values, ax=ax, color_override=bag_colors[0], alpha=0.5)
             # fgtools.plot_graph(updater.current.graph, updater.current.values, ax=ax, title="Testing Loop Closure in Graph", color_override=bag_colors[1], alpha=0.5)
-            fgtools.plot_graph(updater.combined.graph, updater.combined.values, ax=ax, title="Testing Combined Graph", changeColorBySymbols=True)
-            fgtools.plot_graph_covariances(updater.combined.values.keys(), updater.combined.graph, updater.combined.values, ax=ax)
+            tmpValues = updater.combined.values
+            fgtools.plot_graph(updater.combined.graph, tmpValues, ax=ax, title="Testing Combined Graph", changeColorBySymbols=True)
+            fgtools.plot_graph_covariances(tmpValues.keys(), updater.combined.graph, tmpValues, ax=ax)
             # ax.set_xlim(0, 100)
             # ax.set_ylim(-200, -100)
             plt.pause(0.05)
