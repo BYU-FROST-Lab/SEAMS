@@ -14,3 +14,11 @@ class NodeDecisionPolicy(ABC):
 
     def IsInitialized(self) -> bool:
         return self.initialized
+
+class NoDecisionPolicy(NodeDecisionPolicy):
+    def __init__(self, params: Params):
+        super().__init__(params)
+        self.initialized = True
+
+    def DetermineDecisionState(self, metrics: Metrics) -> NodeDecision:
+        return NodeDecision.LOCALIZE

@@ -10,11 +10,15 @@ class TreeData:
     points: list[list[float]]
 
 class DecisionType(Enum):
+    # Don't make any decisions, just localize
+    NONE = auto()
+
     # geometric methods
     DISTANCE = auto()
 
     # registration
     FITNESS = auto()
+    INLIER_RMSE = auto()
 
     # graph theoretic
     TWO_STEP_VALIDATION = auto()
@@ -30,3 +34,12 @@ class NodeDecision(Enum):
     LOCALIZE = auto()
     MAP = auto()
     INITIALIZE = auto()
+
+
+class FixedLagMarginalizationType(Enum):
+    DENSE = auto()
+    APPROX_PRIOR = auto()
+    UNARY = auto()
+    PRIOR_ON_ANCHOR_ALL = auto()
+    PRIOR_ON_ANCHOR_FIRST = auto()
+    THROW_AWAY_BETWEEN = auto()

@@ -1,8 +1,12 @@
 
 .vscode/
 .codex/
+.cursor/
+
 *.ini
 results/
+TestResults/
+*.lock
 
 
 # Byte-compiled / optimized / DLL files
@@ -26,7 +30,7 @@ lib64/
 parts/
 sdist/
 var/
-wheels/
+wheels/*/
 share/python-wheels/
 *.egg-info/
 .installed.cfg

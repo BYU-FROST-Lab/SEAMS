@@ -7,11 +7,11 @@ from common.customTypes import NodeDecision
 class FitnessPolicy(NodeDecisionPolicy):
     def __init__(self, params: Params):
         super().__init__(params)
-        if params.FitnessPolicy.fitnessThreshold > 1.:
-            raise ValueError(f"FitnessPolicy: fitnessThreshold must be in range [0, 1] and be a float. It's currently {params.FitnessPolicy.fitnessThreshold}")
+        if params.fitnessPolicy.fitnessThreshold > 1.:
+            raise ValueError(f"FitnessPolicy: fitnessThreshold must be in range [0, 1] and be a float. It's currently {params.fitnessPolicy.fitnessThreshold}")
         
-        self.fitnessThreshold_ = params.FitnessPolicy.fitnessThreshold
-        self.fitnessHysteresis_ = params.FitnessPolicy.fitnessHysteresisMargin
+        self.fitnessThreshold_ = params.fitnessPolicy.fitnessThreshold
+        self.fitnessHysteresis_ = params.fitnessPolicy.fitnessHysteresisMargin
         self.decision_ = NodeDecision.INITIALIZE
 
     def DetermineDecisionState(self, metrics: Metrics) -> NodeDecision:
@@ -27,3 +27,25 @@ class FitnessPolicy(NodeDecisionPolicy):
         
         return self.decision_
     
+class InlierRMSEPolicy(NodeDecisionPolicy):
+    def __init__(self, params: Params):
+        super().__init__(params)
+        if params.inlierRMSEPolicy.inlierRMSEThreshold < 0.:
+            raise ValueError(f"InlierRMSEPolicy: inlierRMSEThreshold must be >= 0 and be a float. It's currently {params.inlierRMSEPolicy.inlierRMSEThreshold}")
+        
+        self.inlierRMSEThreshold_ = params.inlierRMSEPolicy.inlierRMSEThreshold
+        self.inlierRMSEHysteresis_ = params.inlierRMSEPolicy.inlierRMSEHysteresisMargin
+        self.decision_ = NodeDecision.INITIALIZE
+
+    def DetermineDecisionState(self, metrics: Metrics) -> NodeDecision:
+        if not self.initialized:
+            if metrics.lastInterInlierRMSE < (self.inlierRMSEThreshold_ - self.inlierRMSEHysteresis_):
+                self.initialized = True
+            else:
+                return NodeDecision.INITIALIZE
+        if metrics.lastInterInlierRMSE > (self.inlierRMSEThreshold_ + self.inlierRMSEHysteresis_):
+            self.decision_ = NodeDecision.MAP
+        elif metrics.lastInterInlierRMSE < (self.inlierRMSEThreshold_ - self.inlierRMSEHysteresis_):
+            self.decision_ = NodeDecision.LOCALIZE
+        
+        return self.decision_

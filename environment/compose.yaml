@@ -8,7 +8,8 @@ services:
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix # Needed to display RViz within the container
       - ${HOME}/blocklio/:/root/blocklio/
-      - ${HOME}/gtsam/gtsam/nonlinear:/home/gtsam/gtsam/nonlinear
+      - ${HOME}/gtsam/gtsam/:/home/gtsam/gtsam/
+      - ${HOME}/gtsam/gtsam_unstable/:/home/gtsam/gtsam_unstable/
       # - ${HOME}/data_byu/bags:/root/data_byu
       # - ${HOME}/data_sets:/root/data_sets
       - ${HOME}/yride_env_setup:/yride_env_setup:ro

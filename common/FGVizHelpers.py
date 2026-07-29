@@ -10,6 +10,8 @@ np.set_printoptions(linewidth=np.inf, suppress=False)
 import os
 import open3d as o3d
 import copy
+from typing import Any
+from pathlib import Path
 
 # Local imports
 import gtsam
@@ -109,7 +111,8 @@ def plot_graph(graph: gtsam.gtsam.NonlinearFactorGraph,
                title:str|None=None,
                addKeyLabels:bool=False,
                changeColorBySymbols:bool=False,
-               plotValuePoints:bool=True
+               symbolColors: dict[int, str] = {},
+               plotValuePoints:bool=True,
                ):
     
     if ax is None:
@@ -198,7 +201,8 @@ def plot_graph(graph: gtsam.gtsam.NonlinearFactorGraph,
     # Plot poses
     # ------------------------------------------------------------
     if plotValuePoints:
-        plot_points(values.keys(), values, ax=ax, color=default_point_color, alpha=alpha, addKeyLabels=addKeyLabels, changeColorBySymbols=changeColorBySymbols)
+        plot_points(values.keys(), values, ax=ax, color=default_point_color, alpha=alpha, addKeyLabels=addKeyLabels, 
+                    changeColorBySymbols=changeColorBySymbols, symbolColors=symbolColors)
 
     ax.set_title(title)
     ax.set_xlabel("x")
@@ -217,17 +221,19 @@ def plot_points(
         alpha=1., 
         ax=None, 
         addKeyLabels=False, 
-        changeColorBySymbols:bool=False,):
+        changeColorBySymbols:bool=False,
+        symbolColors: dict[int, str] = {},
+        ):
     px = []
     py = []
     keyLabels = []
     colors = []
-    symbolColors = {}
 
 
     if ax is None:
         ax = plt.gca()
 
+    nextColorInt = 0
     for k in keys:
         p = values.atPose3(k)
         px.append(p.x())
@@ -239,7 +245,14 @@ def plot_points(
             keyLabels.append(str(k))
         
         if s.chr() not in symbolColors:
-            symbolColors[s.chr()] = f'C{len(symbolColors)}'
+            while True:
+                newColor = f'C{nextColorInt}'
+                if newColor in symbolColors.values():
+                    nextColorInt+=1
+                else:
+                    symbolColors[s.chr()] = newColor
+                    nextColorInt+=1
+                    break
 
         if changeColorBySymbols:
             colors.append(symbolColors[s.chr()])
@@ -266,12 +279,30 @@ def plot_isam_graph(isam: gtsam.ISAM2):
     curr_graph = isam.getFactorsUnsafe()
     plot_graph(curr_graph, curr_est)
 
-def plot_graph_covariances(keys: list[int], graph, values, ax, subset='xy', n_std=3.0, **kwargs):
-    try:
-        marginals = gtsam.Marginals(graph, values)
-    except Exception as e:
-        print("Error creating marginals: ", e)
-        return
+def plot_graph_covariances(keys: list[int], 
+                           graph: gtsam.NonlinearFactorGraph | gtsam.IncrementalFixedLagSmoother, 
+                           values: gtsam.Values, 
+                           ax, 
+                           subset='xy', 
+                           n_std=3.0, 
+                           changeColorBySymbols:bool=False,
+                           symbolColors: dict[int, str] = {}, 
+                           **kwargs):
+    '''
+    Optional keyword arguments are: [kw: default_arg]
+    edgecolor: 'tab:blue'
+    linestyle: '-'
+    '''
+    if isinstance(graph, gtsam.NonlinearFactorGraph):
+        try:
+            marginals = gtsam.Marginals(graph, values)
+        except Exception as e:
+            print("Error creating marginals: ", e)
+            return
+    elif isinstance(graph, gtsam.IncrementalFixedLagSmoother):
+        marginals = graph
+    else:
+        raise TypeError("graph must be a gtsam.NonlinearFactorGraph or gtsam.IncrementalFixedLagSmoother")
 
     patches = []
     
@@ -281,12 +312,15 @@ def plot_graph_covariances(keys: list[int], graph, values, ax, subset='xy', n_st
     alpha = kwargs.get('alpha', 0.7)
     facecolor = kwargs.get('facecolor', 'none')
 
+    edgeColors = []
+
     # Slice indices mapping to avoid if/else overhead inside the loop
     slices = {
         'rp': (0, 2, 1), 'py': (1, 3, 1), 'ry': (0, 3, 2),
         'xy': (3, 5, 1), 'yz': (4, 6, 1)
     }
     
+    nextColorInt = 0
     for k in keys:
         # 1. Get Covariance
         full_cov = marginals.marginalCovariance(k)
@@ -316,10 +350,26 @@ def plot_graph_covariances(keys: list[int], graph, values, ax, subset='xy', n_st
         # Create the patch (don't add to axes yet)
         ell = Ellipse(xy=(pose.x(), pose.y()), width=width, height=height, angle=theta)
         patches.append(ell)
+        
+        s = gtsam.Symbol(k)
+        if s.chr() not in symbolColors:
+            while True:
+                newColor = f'C{nextColorInt}'
+                if newColor in symbolColors.values():
+                    nextColorInt+=1
+                else:
+                    symbolColors[s.chr()] = newColor
+                    break
+        
+        if changeColorBySymbols:
+            edgeColors.append(symbolColors[s.chr()])
+        else:
+            edgeColors.append(edgecolor)
+
 
     # 5. Add everything in one batch
     collection = PatchCollection(patches, 
-                                 edgecolor=edgecolor, 
+                                 edgecolor=edgeColors, 
                                  facecolor=facecolor, 
                                  linestyle=linestyle, 
                                  alpha=alpha,
@@ -647,16 +697,18 @@ def choleskyInverse(A: np.ndarray):
     A_inv = np.linalg.solve(L.conj().T, np.linalg.solve(L, np.eye(A.shape[0])))
     return A_inv
 
-def isPSD(M):
+def isPSD(M, printDebug: bool=True):
     M = np.asarray(M)
     if not np.isclose(M, M.conj()).all():
-        print("Matrix is not PSD because it is not Hermitian")
+        if printDebug:
+            print("Matrix is not PSD because it is not Hermitian")
         return False
 
     eigval = np.linalg.eigvalsh(M).min()
 
     if not (eigval > -1e-5): # Smallest eigenvalue is not positive
-        print("Smallest eigenvalue is not positive: ", eigval)
+        if printDebug:
+            print("Smallest eigenvalue is not positive: ", eigval)
         return False
 
     return True
@@ -794,9 +846,8 @@ def writeG2oWithPrior(graph, values, filename: str, saveGPS:bool=True):
 
     :param graph: Factor graph
     :param filename: Name of .g2o file "path/example.g2o"
-    :param rekey: If rekey is True, then keys will be rekeyed to be 0, 1, 2, ... in the sorted order of the keys.
 
-    :return tuple: (priorCount, gpsCount) number of priors and gpsfactors found
+    :return tuple: (priorCount, gpsCount) number of prior and gps factors found
     """
 
     gtsam.writeG2o(graph, values, filename)
@@ -952,37 +1003,107 @@ def combinePCDsInBlocks(blocks: dict[str, BlockStruct], pcds: dict[int, o3d.geom
                     print(f"Pose key {poseKey} in block {blockKey} not found in pcds")
     return block_pcds, non_block_pcds
 
-def savePointClouds(block_pcds: dict[str, o3d.geometry.PointCloud], non_block_pcds: dict[int, o3d.geometry.PointCloud], 
-                    output_dir: str, pose2block_mapping: dict[int, str] | None = None, 
-                    remapKeys: dict[int, int] | None = None, removeExisting: bool = True) \
-                        -> None:
+def saveOdomTUM(timestamps: dict[int, float], values: gtsam.Values, filename: str|Path) -> bool:
+    filename = Path(filename)
+    if not values or not timestamps:
+        print("No values or timestamps to save.")
+        return False
+    
+    ret = True
+    with open(filename, "w") as f:
+        for key in values.keys():
+            pose = values.atPose3(key)
+            q = pose.rotation().toQuaternion()
+            timestamp = timestamps[key]
+            if timestamp is None:
+                print(f"Warning: Timestamp for key {key} is None. Skipping.")
+                continue
+            if f.write(f"{timestamp:.6f} {pose.x():.6f} {pose.y():.6f} {pose.z():.6f} {q.x():.6f} {q.y():.6f} {q.z():.6f} {q.w():.6f}\n") == 0:
+                print(f"Failed to write pose for key {key} to {filename}")
+                ret = False
+    return ret
+
+def saveTimestampsWithKeys(timestamp_dict: dict[int, float], filename: str|Path) -> bool:
+    filename = Path(filename)
+    if not timestamp_dict:
+        print("No timestamps to save.")
+        return False
+    ret = True
+    with open(filename, "w") as f:
+        for key, timestamp in timestamp_dict.items():
+            if f.write(f"{key} {timestamp:.6f}\n") == 0:
+                print(f"Failed to write timestamp for key {key} to {filename}")
+                ret = False
+    return ret
+
+def loadTimestampsWithKeys(filename: str|Path) -> dict[int, float]:
+    filename = Path(filename)
+    timestamp_dict = {}
+    with open(filename, "r") as f:
+        for line in f:
+            key_str, timestamp_str = line.strip().split()
+            key = int(key_str)
+            timestamp = float(timestamp_str)
+            timestamp_dict[key] = timestamp
+    return timestamp_dict
+
+def savePointClouds(pcds: dict[Any, o3d.geometry.PointCloud], 
+                    output_dir: str, 
+                    remap_keys: dict[Any, Any] | None = None, 
+                    remove_existing: bool = True) -> bool:
+    
+    if pcds is None or len(pcds) == 0:
+        print("No point clouds to save.")
+        return False
+
+    if remove_existing and os.path.exists(output_dir):
+        os.system(f"rm -r {output_dir}")
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    ret = True
+    for key, pcd in pcds.items():
+        if remap_keys:
+            key = remap_keys[key]
+
+        filename = os.path.join(output_dir, f"{key}.pcd")
+        if not o3d.io.write_point_cloud(filename, pcd):
+            print(f"Failed to save point cloud for key {key} to {filename}")
+            ret = False
+
+    return ret
+
+def savePointClouds_BlockMap(block_pcds: dict[str, o3d.geometry.PointCloud], 
+                             non_block_pcds: dict[int | str, o3d.geometry.PointCloud],
+                             output_dir: str, 
+                             pose2block_mapping: dict[int, str] | None = None, 
+                             remap_keys: dict[int, int] | None = None, 
+                             remove_existing: bool = True) -> bool:
+    
     blockDir = os.path.join(output_dir, "blocks")
     nonBlockDir = os.path.join(output_dir, "non_blocks")
 
-    if removeExisting and os.path.exists(output_dir):
+    if remove_existing and os.path.exists(output_dir):
         os.system(f"rm -r {output_dir}")
-
-    os.makedirs(blockDir, exist_ok=True)
-    os.makedirs(nonBlockDir, exist_ok=True)
+    
+    os.makedirs(output_dir, exist_ok=True)
 
     if pose2block_mapping is not None:
         pose2block_file = os.path.join(output_dir, "pose2block_mapping.txt")
         with open(pose2block_file, "w") as f:
             for pose_key, block_key in pose2block_mapping.items():
                 f.write(f"{pose_key} {block_key}\n")
+    
+    ret = True
+    if not savePointClouds(block_pcds, blockDir, remap_keys=None, remove_existing=False):
+        print("Failed to save block point clouds.")
+        ret = False
+    if not savePointClouds(non_block_pcds, nonBlockDir, remap_keys=remap_keys, remove_existing=False):
+        print("Failed to save non-block point clouds.")
+        ret = False
 
-    for blockKey, pcd in block_pcds.items():
-        filename = os.path.join(blockDir, f"{blockKey}.pcd")
-        o3d.io.write_point_cloud(filename, pcd)
+    return ret
 
-
-
-    for poseKey, pcd in non_block_pcds.items():
-        if remapKeys:
-            poseKey = remapKeys[poseKey]
-
-        filename = os.path.join(nonBlockDir, f"{poseKey}.pcd")
-        o3d.io.write_point_cloud(filename, pcd)
 
 def loadPose2BlockMapping(filename: str, reverse: bool = False) -> dict[int, str] | dict[str, int]:
     """
@@ -1006,7 +1127,7 @@ def loadPose2BlockMapping(filename: str, reverse: bool = False) -> dict[int, str
     return pose2block_mapping
 
 
-def cleanFactorGraph(graph: gtsam.gtsam.NonlinearFactorGraph|gtsam.ISAM2, excludedSymbols:list[str]=[]) -> gtsam.gtsam.NonlinearFactorGraph:
+def cleanFactorGraph(graph: gtsam.gtsam.NonlinearFactorGraph|gtsam.ISAM2|gtsam.IncrementalFixedLagSmoother, excludedSymbols:list[str]=[]) -> gtsam.gtsam.NonlinearFactorGraph:
     '''
     Factor graphs from ISAM2 can contain null pointers due to marginalization.
     This function clears out the null pointers and returns a clean graph.
@@ -1017,6 +1138,8 @@ def cleanFactorGraph(graph: gtsam.gtsam.NonlinearFactorGraph|gtsam.ISAM2, exclud
 
     if isinstance(graph, gtsam.ISAM2):
         graph = graph.getFactorsUnsafe()
+    elif isinstance(graph, gtsam.IncrementalFixedLagSmoother):
+        graph = graph.getFactors()
 
     compact_graph = gtsam.NonlinearFactorGraph()
 
@@ -1036,7 +1159,12 @@ def cleanFactorGraph(graph: gtsam.gtsam.NonlinearFactorGraph|gtsam.ISAM2, exclud
 
 
 
-def GetPointsFromGraphEstimate(values: gtsam.Values, symbolChr:str|list[str]|None=None, allOthers:bool=False, keys:list[int]=[]) -> tuple[list[list[float]], list[int]]:
+def GetPointsFromGraphEstimate(values: gtsam.Values, 
+                               symbolChr:str|list[str]|None=None, 
+                               allOthers:bool=False, 
+                               keys:list[int]|set[int]=[],
+                               keysToSkip:list[int]|set[int]=[]
+                               ) -> tuple[list[list[float]], list[int]]:
 
     points_list = []
     key_list = []
@@ -1045,19 +1173,21 @@ def GetPointsFromGraphEstimate(values: gtsam.Values, symbolChr:str|list[str]|Non
         keys = values.keys()
 
     for key in keys:
+        if key in keysToSkip:
+            continue
         if symbolChr is not None:
             s = gtsam.Symbol(key)
             if allOthers:
-                if s.chr():
-                    if chr(s.chr()) in symbolChr:
-                        continue
-                elif '' in symbolChr: # The symbol character is empty so if symbolChr is not empty, continue
+                # if s.chr():
+                if chr(s.chr()) in symbolChr:
                     continue
+                # elif '' in symbolChr: # The symbol character is empty so if symbolChr is not empty, continue
+                #     continue
             else:
                 if chr(s.chr()) not in symbolChr: # If the symbol character doesn't match, continue
                     continue
-                elif '' not in symbolChr: # The symbol character is empty so if symbolChr is not empty, continue
-                    continue
+                # elif '' not in symbolChr: # The symbol character is empty so if symbolChr is not empty, continue
+                #     continue
         point = values.atPose3(key)
 
         points_list.append([point.x(), point.y(), point.z()])
@@ -1149,47 +1279,34 @@ def draw_registration_result(source, target, transformation, title:str=""):
 def ScanMatch(
         source: o3d.geometry.PointCloud, 
         target: o3d.geometry.PointCloud, 
-        trans_init:np.ndarray = np.eye(4), 
-        threshold:float = 0.02, 
-        showResult:bool = False,
+        trans_init: np.ndarray = np.eye(4), 
+        threshold: float = 0.02, 
+        showResult: bool = False,
+        voxel_size: float | None = 0.5,
         ) -> o3d.pipelines.registration.RegistrationResult:
     '''
     Inputs:
-
     :param source: transform applies to this one
     :param target: stationary/reference
+    :param voxel_size: If not None, will voxel downsample the point clouds before registration. Default=0.5
     '''
 
     source = copy.deepcopy(source)
     target = copy.deepcopy(target)
-    
-    if showResult:
-        print("Initial alignment")
-        evaluation = o3d.pipelines.registration.evaluate_registration(
-            source, target, threshold, trans_init
-        )
-        print(evaluation)
-        print("Initial Transformation is:")
-        print(trans_init)
-        draw_registration_result(source, target, trans_init, title="Initial Transform")
 
+    if voxel_size is not None:
+        # source = source.voxel_down_sample(voxel_size)
+        target = target.voxel_down_sample(voxel_size)
     
-    # target.estimate_normals(
-    #     search_param=o3d.geometry.KDTreeSearchParamHybrid(
-    #         radius=0.05,
-    #         max_nn=30
+    # if showResult:
+    #     print("Initial alignment")
+    #     evaluation = o3d.pipelines.registration.evaluate_registration(
+    #         source, target, threshold, trans_init
     #     )
-    # )
-
-    # # Optional: orient normals consistently
-    # target.orient_normals_consistent_tangent_plane(k=30)
-
-    # reg = o3d.pipelines.registration.registration_icp(
-    #     source, target, threshold, trans_init,
-    #     o3d.pipelines.registration.TransformationEstimationPointToPlane(),
-    #     # o3d.pipelines.registration.TransformationEstimationPointToPoint(),
-    #     # o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=2000)
-    # )
+    #     print(evaluation)
+    #     print("Initial Transformation is:")
+    #     print(trans_init)
+    #     draw_registration_result(source, target, trans_init, title="Initial Transform")
 
     reg = o3d.pipelines.registration.registration_generalized_icp(
         source, target, 0.5, trans_init,
@@ -1198,7 +1315,7 @@ def ScanMatch(
     
     trans_final = reg.transformation
     if showResult:
-        print("Apply point-to-plane ICP")
+        print("Apply GICP ICP")
         print(reg)
         print("Transformation is:")
         print(trans_final)
@@ -1206,10 +1323,41 @@ def ScanMatch(
     
     return reg
 
+def ListToGtsamKeyList(listToConvert:list) -> gtsam.KeyList:
+    keyList = gtsam.KeyList()
+    for k in listToConvert:
+        keyList.push_back(k)
+    return keyList
 
-
+def AddValueToDictList(dictionary: dict[Any, list], key: Any, value: Any):
+    if key in dictionary:
+        dictionary[key].append(value)
+    else:
+        dictionary[key] = [value]
 
 
 
     
     
+import io
+import graphviz
+import matplotlib.image as mpimg
+import matplotlib.pyplot as plt
+
+def show_graphviz(dot_string):
+    # # 1. Generate dot data
+    # dot_string = "digraph G { A -> B; }"
+    # plt.close("graphViz")
+    plt.figure("graphViz")
+
+    src = graphviz.Source(dot_string)
+
+    # 2. Pipe to PNG bytes in memory
+    png_bytes = src.pipe(format="png")
+    fp = io.BytesIO(png_bytes)
+
+    # 3. Plot via Matplotlib
+    img = mpimg.imread(fp, format="png")
+    plt.imshow(img)
+    plt.axis("off")  # Hide grid lines/axes
+    plt.pause(0.1)   # Opens a live window; script pauses until closed

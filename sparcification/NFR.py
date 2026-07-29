@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import common.FGVizHelpers as fgtools
 import gtsam
@@ -833,7 +835,7 @@ class GraphSparsification :
 
 
 
-def main(graphPath:str | None = None, marginalizeType:str="whole", vizualize:bool=True, block_width:float=50.0):
+def main(graphPath:str | Path | None = None, marginalizeType:str="whole", vizualize:bool=True, block_width:float=50.0):
     import os
 
     fgtools.setBlockWidth(block_width)
@@ -841,16 +843,15 @@ def main(graphPath:str | None = None, marginalizeType:str="whole", vizualize:boo
     # Load graph
     fileName = "fullSavedGraph.g2o"
     if graphPath is None:
-        scriptDir = os.path.dirname(os.path.realpath(__file__))
-        graphPath = os.path.join(scriptDir, "../results/second_session/")
+        scriptDir = Path(os.path.dirname(os.path.realpath(__file__)))
+        graphPath = scriptDir / "../../results/urban/around_block_initial"
         print(f"graphPath: {graphPath}")
-        graph, values = fgtools.readG2oWithPrior(graphPath + fileName, loadGPS=False)
+        graph, values = fgtools.readG2oWithPrior(str(graphPath / fileName), loadGPS=False)
     else:
         print(f"graphPath: {graphPath}")
-        graph, values = fgtools.readG2oWithPrior(graphPath + fileName)
-
-    
-
+        if isinstance(graphPath, str):
+            graphPath = Path(graphPath)
+        graph, values = fgtools.readG2oWithPrior(str(graphPath / fileName))
 
     hasPrior = False
     for i in range(graph.size()):
@@ -1002,13 +1003,13 @@ def main(graphPath:str | None = None, marginalizeType:str="whole", vizualize:boo
         if not savePath.endswith("/"):
             savePath += "/"
 
-        pcds = fgtools.loadPosePCDs(graphPath + "Scans/")
+        pcds = fgtools.loadPosePCDs(str(graphPath / "Scans/"))
         block_pcds, non_block_pcds = fgtools.combinePCDsInBlocks(blocks, pcds, values)
 
         new_graph, new_values, pose2block_mapping, key_mapping = fgtools.rekeyGraphAndBlocks(sparse_graph, sparse_values, blocks)
 
         
-        fgtools.savePointClouds(block_pcds, non_block_pcds, savePath, pose2block_mapping, key_mapping, removeExisting=True)
+        fgtools.savePointClouds(block_pcds, non_block_pcds, savePath, pose2block_mapping, key_mapping, remove_existing=True)
 
         fgtools.writeG2oWithPrior(new_graph, new_values, savePath + "sparseGraph.g2o")
         print(f"Graph saved to {savePath}")

@@ -15,7 +15,7 @@ class TwoStepConnectivityPolicy(NodeDecisionPolicy):
         self.d_bar_hist = []
         self.lastState = NodeDecision.INITIALIZE
         self.debug = True
-        if params.TwoStepConnectivityPolicy.showDLplot:
+        if params.twoStepConnectivityPolicy.showDLplot:
             _, self.ax = plt.subplots()
         
         self.previousState_ = NodeDecision.INITIALIZE
@@ -31,7 +31,7 @@ class TwoStepConnectivityPolicy(NodeDecisionPolicy):
             self.d_bar_hist.clear()
         self.previousState_ = metrics.currentState
 
-        if len(self.d_bar_hist) < (self.params.TwoStepConnectivityPolicy.movingAverageLength // 2):
+        if len(self.d_bar_hist) < (self.params.twoStepConnectivityPolicy.movingAverageLength // 2):
         # if len(self.d_bar_hist) < 2:
             self.d_bar_hist.append(d_bar)
             return NodeDecision.INITIALIZE
@@ -55,10 +55,10 @@ class TwoStepConnectivityPolicy(NodeDecisionPolicy):
 
         # if metrics.currentState != NodeDecision.MAP:
         self.d_bar_hist.append(d_bar)
-        while len(self.d_bar_hist) > self.params.TwoStepConnectivityPolicy.movingAverageLength:
+        while len(self.d_bar_hist) > self.params.twoStepConnectivityPolicy.movingAverageLength:
             self.d_bar_hist.pop(0)
 
-        if self.params.TwoStepConnectivityPolicy.showDLplot:
+        if self.params.twoStepConnectivityPolicy.showDLplot:
             plot_d_and_lambda(d_bar, float(mu - 2*sigma), lambda2, ax=self.ax)
 
         return NodeDecision.LOCALIZE

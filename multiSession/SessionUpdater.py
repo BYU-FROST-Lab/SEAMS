@@ -16,12 +16,13 @@ from params import Params
 class SessionUpdater:
     def __init__(self, priorSession: SessionManager=SessionManager(), params:Params=Params()):
         self.params = params
-        self.AddPriorSession(priorSession)    
-        self.currentSession_ = SessionManager()
+        # self.AddPriorSession(priorSession)    
+        # self.currentSession_ = SessionManager()
 
         self.combinedSession_ = SessionManager(params=params)
-        self.combinedSession_.SetGraphAndValues(priorSession.graph, priorSession.values)
-        self.combinedSession_.SetPointClouds(self.priorSession_.scans)
+        if priorSession.Size() > 0:
+            self.combinedSession_.SetPriorGraphAndValues(priorSession.fullGraph, priorSession.fullValues, self.params.priorSessionSymbolChrs)
+            self.combinedSession_.SetPointClouds(priorSession.scans)
         self.lastPose_ = None
         self.initialized_ = False
         self.loopCnt_ = 0
@@ -32,14 +33,12 @@ class SessionUpdater:
         self.DEFAULT_NOISE3 = gtsam.noiseModel.Diagonal.Sigmas(np.asarray([1e-6] * 3))
 
     def AddPriorSession(self, priorSession: SessionManager):
-        if self.params.rekeyPrior:
-            if len(self.params.priorSessionSymbolChrs) > 0:
-                priorSession.RenameKeys(self.params.priorSessionSymbolChrs, resetIsam2=True)
-            else:
-                priorSession.RenameKeys(autoRename=True, resetIsam2=True)
-                self.params.priorSessionSymbolChrs = priorSession.priorSessionSymbols
-                self.params.addToPriorSymbolChr = priorSession.addToPriorSymbol
-        self.priorSession_ = priorSession
+        pass
+        # if self.params.rekeyPrior:
+        #     priorSession.RenameKeys(self.params.priorSessionSymbolChrs, resetIsam2=True)
+        #     self.params.priorSessionSymbolChrs = priorSession.priorSessionSymbols
+        #     self.params.addToPriorSymbolChr = priorSession.addToPriorSymbol
+        # # self.priorSession_ = priorSession
 
     def AddInitialOrientationForCurrentSession(self, rot: gtsam.Rot3):
         if isinstance(rot, gtsam.Rot3):
@@ -47,7 +46,7 @@ class SessionUpdater:
         else:
             raise TypeError(f"Input must by of type gtsam.Rot3 not {type(rot)}")
 
-    def AddOdomKeyFrame(self, pose:np.ndarray|gtsam.gtsam.Pose3, pointCloud: o3d.geometry.PointCloud, relPose:gtsam.Pose3|None=None):
+    def AddOdomKeyFrame(self, pointCloud: o3d.geometry.PointCloud, pose:np.ndarray|gtsam.gtsam.Pose3|None=None, relPose:gtsam.Pose3|None=None, timestamp:float=0.0):
         '''
         Assumes pose is being added to last value in graph
         '''
@@ -58,6 +57,8 @@ class SessionUpdater:
             pose = gtsam.Pose3(gtsam.Rot3(pose[3], pose[4], pose[5], pose[6]), pose[:3])
 
         if not self.initialized_:
+            if pose is None:
+                raise ValueError("Pose must be provided for the first keyframe")
             self.initialized_ = True
             print("Adding Prior Factor to Current Session")
             if hasattr(self, "initialRot"):
@@ -65,22 +66,18 @@ class SessionUpdater:
                 finalRot = self.initialRot * pose.rotation()
                 pose = gtsam.Pose3(finalRot, pose.translation())
             key = gtsam.Symbol(self.params.currSessionSymbolChr,0).key()
-            # self.currentSession_.AddPrior(key, pose, gtsam.noiseModel.Diagonal.Variances(np.array([1e-2, 1e-2, np.pi**2, 100, 100, 100])))
-            # self.currentSession_.AddPointCloud(key, pointCloud)
-
-            self.combinedSession_.AddPrior(key, pose, gtsam.noiseModel.Diagonal.Variances(np.array([np.pi**2, np.pi**2, np.pi**2, 100, 100, 100])))
-            self.combinedSession_.AddPointCloud(key, pointCloud)
+            if self.combinedSession_.priorIsam_.size() != 0:
+                self.combinedSession_.AddPrior(key, pose, gtsam.noiseModel.Diagonal.Variances(np.array([np.pi**2, np.pi**2, np.pi**2, 10, 10, 10])))
+            else:
+                self.combinedSession_.AddPrior(key, pose, gtsam.noiseModel.Diagonal.Variances(np.array([1e-2]*6)))
+            self.combinedSession_.AddPointCloud(key, pointCloud, timestamp=timestamp)
             return
         
-        # key = self.currentSession_.AddOdomFactor(pose, relPose, symbolChr=self.params.currSessionSymbolChr)
-        # self.currentSession_.AddPointCloud(key, pointCloud)
-        
-
-        key = self.combinedSession_.AddOdomFactor(pose, relPose, symbolChr=self.params.currSessionSymbolChr)
-        self.combinedSession_.AddPointCloud(key, pointCloud)
+        key = self.combinedSession_.AddOdomFactor(pose, relPose)
+        self.combinedSession_.AddPointCloud(key, pointCloud, timestamp=timestamp)
         
         self.loopCnt_ += 1
-        if self.loopCnt_ > self.params.LoopClosure.skipFrames:
+        if self.loopCnt_ > self.params.loopClosure.skipFrames:
             self.loopCnt_ = 0
             # self.currentSession_.CheckLoopClosure(inter=False)
 
@@ -90,13 +87,13 @@ class SessionUpdater:
     def UpdateFixedLagKeep(self, num:int):
         self.fixedLagKeep = num
 
-    @property
-    def prior(self) -> SessionManager:
-        return self.priorSession_
+    # @property
+    # def prior(self) -> SessionManager:
+    #     return self.priorSession_
     
-    @property
-    def current(self) -> SessionManager:
-        return self.currentSession_
+    # @property
+    # def current(self) -> SessionManager:
+    #     return self.currentSession_
     
     @property
     def combined(self) -> SessionManager:

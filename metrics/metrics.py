@@ -46,8 +46,16 @@ class Metrics:
                 self.lastInterFitness = lastInterICPResult.fitness
             else:
                 self.lastInterFitness = np.inf
-            if self.params.FitnessPolicy.debug:
+            if self.params.fitnessPolicy.debug:
                 print(f"Metrics: FitnessScore = {self.lastInterFitness}")
+
+        if DecisionType.INLIER_RMSE in self.method_:
+            if lastInterICPResult is not None:
+                self.lastInterInlierRMSE = lastInterICPResult.inlier_rmse
+            else:
+                self.lastInterInlierRMSE = np.inf
+            if self.params.inlierRMSEPolicy.debug:
+                print(f"Metrics: InlierRMSE = {self.lastInterInlierRMSE}")
 
         if DecisionType.TWO_STEP_VALIDATION in self.method_:
             self.gtsamGraph = cleanFactorGraph(isam)
@@ -61,9 +69,18 @@ class Metrics:
             self.ComputeL()
 
         if DecisionType.RELATIVE_COVARIANCE in self.method_:
-            key = self.GetClosestKey(priorTreeData, values.atPose3(lastPoseKey))
-            jointMarginal = isam.jointMarginalCovariance([lastPoseKey, key])
-            self.relCov = getRelativeCov(values.atPose3(lastPoseKey), values.atPose3(key), jointMarginal.fullMatrix())
+            # Get the relative covariance between the last pose (next one to be marginalized out) and the closest prior pose
+            if currentState == NodeDecision.LOCALIZE:
+                if not currentKeys:
+                    raise ValueError("Current keys list is empty, cannot compute relative covariance.")
+                key = self.GetClosestKey(priorTreeData, values.atPose3(currentKeys[-1]))
+                jointmarginal = isam.jointMarginalCovariance([currentKeys[-1], key])
+                self.relCov = getRelativeCov(values.atPose3(currentKeys[-1]), values.atPose3(key), jointmarginal.fullMatrix())
+            # Get the relative covariance between the first pose in the current session and the closest prior pose
+            else:
+                key = self.GetClosestKey(priorTreeData, values.atPose3(lastPoseKey))
+                jointMarginal = isam.jointMarginalCovariance([lastPoseKey, key])
+                self.relCov = getRelativeCov(values.atPose3(lastPoseKey), values.atPose3(key), jointMarginal.fullMatrix())
 
 
     def GetClosestKey(self, priorTreeData: TreeData, pose: gtsam.Pose3):

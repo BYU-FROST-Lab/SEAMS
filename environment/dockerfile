@@ -23,9 +23,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git
 
 # Download GTSAM
+# ARG GTSAM_VERSION="develop"
+# RUN cd /home && \
+#     git clone -b ${GTSAM_VERSION} https://github.com/borglab/gtsam.git
+
 ARG GTSAM_VERSION="develop"
 RUN cd /home && \
-    git clone -b ${GTSAM_VERSION} https://github.com/borglab/gtsam.git
+    git clone -b ${GTSAM_VERSION} https://github.com/BYU-FROST-Lab/gtsam.git
 
 # Install python package prereqs and any desired libraries
 RUN pip install -r /home/gtsam/python/dev_requirements.txt && \
