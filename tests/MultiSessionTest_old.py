@@ -72,9 +72,7 @@ params = Params(rekeyPrior=True,
                 # fixedLagMarg = FixedLagMarginalizationType.DENSE,
                 fixedLagMarg = FixedLagMarginalizationType.APPROX_PRIOR,
                 )
-# updater = SessionUpdater(priorSession, 
-#                          params
-#                         )
+
 graph = session1.graph
 values = session1.values
 new_graph = gtsam.NonlinearFactorGraph()
@@ -176,80 +174,4 @@ print("Done with second session")
 # currentSession.Finalize()
 # combinedPointCloud = currentSession.CreateGlobalPCD()
 # o3d.visualization.draw_geometries([combinedPointCloud])
-
-
-
-
-# ###################################################################################
-# # Session 3
-# ###################################################################################
-
-# priorSession = currentSession
-# # priorSession = session1
-# priorPoses, keys = fgtools.GetPosesFromGraphEstimate(priorSession.values)
-# # priorSession.AddPrior(0, 
-# #                       gtsam.Pose3(
-# #                           gtsam.Rot3(priorPoses[0,3], priorPoses[0,4], priorPoses[0,5], priorPoses[0,6]), 
-# #                           priorPoses[0,:3]), 
-# #                       gtsam.noiseModel.Diagonal.Variances(np.array([1e-8]*6)),
-# #                       skipValue=True
-# #                       )
-# updater = SessionUpdater(priorSession, 
-#                          Params(
-#                              rekeyPrior=True, 
-#                              policyType=DecisionType.DISTANCE,
-#                              fixedLagCurrentSession=True,
-#                              )
-#                          )
-# # updater.AddInitialOrientationForCurrentSession(gtsam.Rot3(w=0., x=0., y=0., z=1.))
-
-# _, ax = plt.subplots()
-
-# currentSession = session3
-# poses, keys = fgtools.GetPosesFromGraphEstimate(currentSession.values)
-# scans = currentSession.scans
-# cnt = 0
-
-# if ENABLE_OPEN3D:
-#     viz3 = LiveMapVisualizer(updater, window_name="Session 3 — Live Map")
-#     viz3.start()
-
-# for i, pose in enumerate(poses):
-#     currPose = gtsam.Pose3(gtsam.Rot3(pose[3], pose[4], pose[5], pose[6]), pose[:3])
-#     if i == 0:
-#         relPose = None
-#     else:
-#         tmpPose = poses[i-1]
-#         prevPose = gtsam.Pose3(gtsam.Rot3(tmpPose[3], tmpPose[4], tmpPose[5], tmpPose[6]), tmpPose[:3])
-#         relPose = prevPose.between(currPose)
-#     updater.AddOdomKeyFrame(pose, scans[keys[i]], relPose)
-
-#     if cnt > 5:
-#         cnt = 0
-#         if ENABLE_MATPLOTLIB:
-#             ax.clear()
-#             # fgtools.plot_graph(updater.prior.graph, updater.prior.values, ax=ax, color_override=bag_colors[0], alpha=0.5)
-#             # fgtools.plot_graph(updater.current.graph, updater.current.values, ax=ax, title="Testing Loop Closure in Graph", color_override=bag_colors[1], alpha=0.5)
-#             fgtools.plot_graph(currentSession.graph, currentSession.values, ax=ax, title="Testing Combined Graph", changeColorBySymbols=True)
-#             plt.pause(0.05)
-#         if ENABLE_OPEN3D and not viz3.update():
-#             print("Open3D Failed: Session 3 window closed. Matplotlib will be used instead.")
-#             viz3.close()
-#             ENABLE_OPEN3D = False
-#             ENABLE_MATPLOTLIB = True
-#     cnt += 1
-
-# if ENABLE_OPEN3D:
-#     viz3.close()
-
-# ax.clear()
-# # fgtools.plot_graph(updater.prior.graph, updater.prior.values, ax=ax, color_override=bag_colors[0], alpha=0.5)
-# # fgtools.plot_graph(updater.current.graph, updater.current.values, ax=ax, title="Testing Loop Closure in Graph", color_override=bag_colors[1], alpha=0.5, addKeyLabels=True)
-# fgtools.plot_graph(currentSession.graph, currentSession.values, ax=ax, title="Testing Combined Graph", addKeyLabels=False, changeColorBySymbols=True)
-# # fgtools.plot_graph_covariances(currentSession.values.keys(), currentSession.graph, currentSession.values, ax=ax)
-# plt.show()
-
-# combinedPointCloud = currentSession.CreateGlobalPCD()
-# o3d.visualization.draw_geometries([combinedPointCloud])
-
 

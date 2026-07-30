@@ -16,7 +16,6 @@ from scipy.spatial import KDTree
 import gtsam
 import gtsam_unstable
 import common.FGVizHelpers as fgtools
-from multiSession.SessionUpdater import SessionUpdater
 from multiSession.SessionManager import SessionManager
 from params import Params
 from common.customTypes import DecisionType, FixedLagMarginalizationType
@@ -29,7 +28,7 @@ from ros2.readFromRosbags import ReadTopicsFromRosbag, GroundTruthLoader
 # Visualization flags — override these or use --viz on the CLI
 # ------------------------------------------------------------
 ENABLE_MATPLOTLIB = True
-ENABLE_OPEN3D = True
+ENABLE_OPEN3D = False
 
 
 moduleDir = Path(__file__).resolve().parents[1]
@@ -62,12 +61,13 @@ def run_session(params: Params = Params(), enable_matplotlib: bool = ENABLE_MATP
     priorSessionPath = params.loadSessionDir
     currentSession = SessionManager(priorSessionPath, params)
 
-    bag1 = ReadTopicsFromRosbag(str(params.bagFile), waiting_threshold=1.0)
+    bag1 = ReadTopicsFromRosbag(str(params.bagFile), waiting_threshold=0.0)
 
     if params.gtFile is not None:
         gt = GroundTruthLoader(str(params.gtFile))
     else:
         gt = None
+    gt2 = GroundTruthLoader("/home/benb/data_byu/bags/urban/groundTruth/block0_gt/optimized_poses.txt")
         
     kissOdom = KissICPOdom(config_file_path=params.kissICPConfigFile)
 
@@ -77,7 +77,7 @@ def run_session(params: Params = Params(), enable_matplotlib: bool = ENABLE_MATP
 
     poses = []
 
-    sessionSymbols = {ord('c'): 'C0'}
+    sessionSymbols = {ord('c'): 'C0'}#,ord('A'): 'C1', ord('B'): 'C2', ord('C'): 'C3'}
 
     if show_mpl:
         _, ax = plt.subplots()
@@ -87,7 +87,13 @@ def run_session(params: Params = Params(), enable_matplotlib: bool = ENABLE_MATP
         viz = LiveMapVisualizer(currentSession, window_name="MultiSession — Live Map")
         viz.start()
 
+    start_time = time.time()
+    firstTimestamp = None
     for topic, timestamp, xyz_points in bag1.next_message():
+        if firstTimestamp is None:
+            firstTimestamp = timestamp
+
+        
         if firstPass and gt is not None:
             gtPose = gt.get_closest_gt(timestamp)
             print(f"Initial pose is: \n{gtPose}")
@@ -109,16 +115,19 @@ def run_session(params: Params = Params(), enable_matplotlib: bool = ENABLE_MATP
         else:
             # Filter out frames that are too close to the last pose
             relPose_tmp = lastPose_odom.between(composedPose_odom)
-            if np.linalg.norm(relPose_tmp.translation()) < 1.0 and relPose_tmp.rotation().rpy().max() < np.deg2rad(5):
+            if np.linalg.norm(relPose_tmp.translation()) < 1.0:# and relPose_tmp.rotation().rpy().max() < np.deg2rad(5):
                 continue
             # T_odom_to_robot = odom_to_robot_frame(lastPose_odom, currentSession.values.atPose3(currentSession.values.keys()[-1]))
             # relPose_tmp = T_odom_to_robot.compose(relPose_tmp)
-            poses.append(relPose_tmp)
+            # poses.append(relPose_tmp)
             currentSession.Update(deskewed_points, relPose=relPose_tmp, timestamp=timestamp)
             lastPose_odom = composedPose_odom
-            print(f"Frame {totalCnt}: relative pose computed")
-            print(f"    Translation: {relPose_tmp.translation()}, Rotation: {relPose_tmp.rotation().rpy()}")
+            # print(f"Frame {totalCnt}: relative pose computed")
+            # print(f"    Translation: {relPose_tmp.translation()}, Rotation: {relPose_tmp.rotation().rpy()}")
 
+        if totalCnt == 35:
+            pass
+        
         # odom.update_last_pose(currentSession.values.atPose3(currentSession.values.keys()[-1]))
         if cnt >= MAX_COUNT: # or totalCnt > 225:
         # if True:
@@ -133,16 +142,18 @@ def run_session(params: Params = Params(), enable_matplotlib: bool = ENABLE_MATP
                 # fgtools.plot_graph_covariances(currentSession.priorValues.keys(), currentSession.priorGraph, currentSession.priorValues, ax=ax, edgecolor="tab:grey")
                 if gt is not None:
                     ax.plot(gt.array[:,1], gt.array[:,2], color='tab:green', label='Ground Truth', alpha=0.5)
+                    # ax.plot(gt2.array[:,1], gt2.array[:,2], color='tab:orange', label='Ground Truth Block0', alpha=0.5)
                 fgtools.plot_graph(currentSession.graph, tmpValues, ax=ax, title="Testing Combined Graph", changeColorBySymbols=True, addKeyLabels=False, symbolColors=sessionSymbols)
-                fgtools.plot_graph_covariances(tmpValues.keys(), currentSession.fixedLagSmoother, tmpValues, ax=ax, changeColorBySymbols=True, symbolColors=sessionSymbols)
-                odom_values = gtsam.Values()
-                for i, pose in enumerate(kissOdom.poses):
-                    odom_values.insert(gtsam.Symbol('o', i).key(), pose)
-                fgtools.plot_points(odom_values.keys(), odom_values, color='tab:red', ax=ax)
+                # fgtools.plot_graph_covariances(tmpValues.keys(), currentSession.fixedLagSmoother, tmpValues, ax=ax, changeColorBySymbols=True, symbolColors=sessionSymbols)
+                # odom_values = gtsam.Values()
+                # for i, pose in enumerate(kissOdom.poses):
+                #     odom_values.insert(gtsam.Symbol('o', i).key(), pose)
+                # fgtools.plot_points(odom_values.keys(), odom_values, color='tab:red', ax=ax)
                 
                 if FIXED_WINDOW:
-                    p1 = tmpValues.atPose3(tmpValues.keys()[-1])
-                    p2 = tmpValues.atPose3(tmpValues.keys()[-min(Params().fixedLagKeepFrames+1, totalCnt+1)])
+                    windowKeys = currentSession.GetMostRecentKeys(params.fixedLagKeepFrames+1)
+                    p1 = tmpValues.atPose3(windowKeys[-1])
+                    p2 = tmpValues.atPose3(windowKeys[0])
                     offset = 5
                     ax.set_xlim(min(p1.x(), p2.x())-offset, max(p1.x(), p2.x())+offset)
                     ax.set_ylim(min(p1.y(), p2.y())-offset, max(p1.y(), p2.y())+offset)
@@ -157,19 +168,32 @@ def run_session(params: Params = Params(), enable_matplotlib: bool = ENABLE_MATP
         cnt += 1
         totalCnt += 1
 
+    end_time = time.time()
+    bag_time = timestamp - firstTimestamp
+    run_time = end_time - start_time
+
+    isRealTime = run_time < bag_time
+    print(f"Real-time performance: {"\033[92m" if isRealTime else "\033[91m"}{isRealTime}\033[0m" \
+            f" (bag time: {bag_time:.2f}s, run time: {run_time:.2f}s)")
+
     if show_o3d and viz is not None:
         viz.close()
 
     if show_mpl:
         ax.clear()
-        fgtools.plot_graph(currentSession.graph, currentSession.values, ax=ax, title="Testing Combined Graph", addKeyLabels=False, changeColorBySymbols=True, symbolColors=sessionSymbols)
-        fgtools.plot_graph_covariances(currentSession.values.keys(), currentSession.fixedLagSmoother, currentSession.values, ax=ax, changeColorBy_symbols=True, symbolColors=sessionSymbols)
+    else:
+        ax = None
+    final_graph, final_values, _, _ = currentSession.GetFinalSessionInfo()
+    ax = fgtools.plot_graph(final_graph, final_values, ax=ax, title="Testing Combined Graph", addKeyLabels=False, changeColorBySymbols=True, symbolColors=sessionSymbols)
+    # fgtools.plot_graph_covariances(final_values.keys(), final_graph, final_values, ax=ax, changeColorBySymbols=True, symbolColors=sessionSymbols)
 
     currentSession.SaveSession(params.saveSessionDir)
+    # Save matplotlib figure
+    plt.savefig(params.saveSessionDir / "final_graph.png", dpi=300, bbox_inches='tight')
     print("Done with session")
-
-    if show_mpl:
-        plt.show()
+    
+    # if show_mpl:
+    plt.show()
 
 
 
@@ -201,16 +225,16 @@ if __name__ == "__main__":
     ########################################
 
     # args.dataset = "nc"
-    # args.mission = "quad-medium"
+    # args.mission = "quad-hard"
     # args.load_session_dir = moduleDir / "results/nc/quad-easy/"
     # args.save_session_dir = moduleDir / "results/nc/quad-medium_prior_quad-easy/"
 
-    args.dataset = "urban"
-    args.mission = "block1"
-    # args.load_session_dir = None
+    # args.dataset = "urban"
+    # args.mission = "block1"
+    # # args.load_session_dir = None
     # args.load_session_dir = moduleDir / "results/urban/block0/"
-    # args.save_session_dir = moduleDir / "results/urban/block0/"
-    args.save_session_dir = moduleDir / "results/urban/block1/"
+    # # args.save_session_dir = moduleDir / "results/urban/block0/"
+    # args.save_session_dir = moduleDir / "results/urban/block1/"
 
     ########################################
 
@@ -252,6 +276,8 @@ if __name__ == "__main__":
     
     if args.save_session_dir is not None:
         save_session_dir = Path(args.save_session_dir).absolute()
+    elif load_session_dir is not None:
+        save_session_dir = load_session_dir.parent / f"{args.mission}_prior_{load_session_dir.name}"
     else:
         save_session_dir = moduleDir / "results/test_session"
         if save_session_dir.exists():
@@ -263,7 +289,7 @@ if __name__ == "__main__":
         enable_mpl = ENABLE_MATPLOTLIB
         # enable_mpl = False
         enable_o3d = ENABLE_OPEN3D
-        enable_o3d = False
+        # enable_o3d = False
     else:
         enable_mpl = args.viz in ("mpl", "both")
         enable_o3d = args.viz in ("o3d", "both")
@@ -276,7 +302,7 @@ if __name__ == "__main__":
         rekeyPrior=True,
         loadSessionDir=load_session_dir,
         saveSessionDir=save_session_dir,
-        policyType=DecisionType.INLIER_RMSE,
+        policyType=DecisionType.FITNESS,
         bagFile=bag_file,
         gtFile=gt_file,
     )

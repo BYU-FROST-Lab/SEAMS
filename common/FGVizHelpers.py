@@ -113,6 +113,7 @@ def plot_graph(graph: gtsam.gtsam.NonlinearFactorGraph,
                changeColorBySymbols:bool=False,
                symbolColors: dict[int, str] = {},
                plotValuePoints:bool=True,
+               plotGridSize:float|None=None,
                ):
     
     if ax is None:
@@ -121,6 +122,7 @@ def plot_graph(graph: gtsam.gtsam.NonlinearFactorGraph,
     if isinstance(color_override, str):
         unary_factor_color = color_override
         linearContainer_factor_color = color_override
+        loopClosure_factor_color = color_override
         default_factor_color = color_override
         default_point_color = color_override
         if alpha is None:
@@ -131,10 +133,12 @@ def plot_graph(graph: gtsam.gtsam.NonlinearFactorGraph,
         if edgeColor == "default":
             unary_factor_color = "tab:green"
             linearContainer_factor_color = "tab:purple"
+            loopClosure_factor_color = "tab:olive"
             default_factor_color = "tab:orange"
         else:
             unary_factor_color = edgeColor
             linearContainer_factor_color = edgeColor
+            loopClosure_factor_color = edgeColor
             default_factor_color = edgeColor
         default_point_color = nodeColor
     
@@ -178,9 +182,13 @@ def plot_graph(graph: gtsam.gtsam.NonlinearFactorGraph,
             cy = np.mean(y)
             factor_color = linearContainer_factor_color
         else:
+            if len(keys) == 2:
+                if abs(keys[0] - keys[1]) == 1:
+                    factor_color = default_factor_color
+                else:
+                    factor_color = loopClosure_factor_color
             cx = np.mean(x)
             cy = np.mean(y)
-            factor_color = default_factor_color
         
         global_cx.append(cx)
         global_cy.append(cy)
@@ -208,8 +216,9 @@ def plot_graph(graph: gtsam.gtsam.NonlinearFactorGraph,
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     ax.axis('equal')
-    ax.xaxis.set_major_locator(MultipleLocator(BLOCK_WIDTH))
-    ax.yaxis.set_major_locator(MultipleLocator(BLOCK_WIDTH))
+    if plotGridSize:
+        ax.xaxis.set_major_locator(MultipleLocator(plotGridSize))
+        ax.yaxis.set_major_locator(MultipleLocator(plotGridSize))
     ax.grid(color='lightgray',linestyle='--')
     # plt.show()
     return ax
@@ -1281,13 +1290,14 @@ def ScanMatch(
         target: o3d.geometry.PointCloud, 
         trans_init: np.ndarray = np.eye(4), 
         threshold: float = 0.02, 
-        showResult: bool = False,
+        showResult: int = 0,
         voxel_size: float | None = 0.5,
         ) -> o3d.pipelines.registration.RegistrationResult:
     '''
     Inputs:
     :param source: transform applies to this one
     :param target: stationary/reference
+    :param showResult: 0 = no visualization, 1 = visualize initial alignment, 2 = visualize final alignment, 3 = visualize both
     :param voxel_size: If not None, will voxel downsample the point clouds before registration. Default=0.5
     '''
 
@@ -1295,18 +1305,18 @@ def ScanMatch(
     target = copy.deepcopy(target)
 
     if voxel_size is not None:
-        # source = source.voxel_down_sample(voxel_size)
+        source = source.voxel_down_sample(voxel_size)
         target = target.voxel_down_sample(voxel_size)
     
-    # if showResult:
-    #     print("Initial alignment")
-    #     evaluation = o3d.pipelines.registration.evaluate_registration(
-    #         source, target, threshold, trans_init
-    #     )
-    #     print(evaluation)
-    #     print("Initial Transformation is:")
-    #     print(trans_init)
-    #     draw_registration_result(source, target, trans_init, title="Initial Transform")
+    if showResult == 1 or showResult == 3:
+        print("Initial alignment")
+        evaluation = o3d.pipelines.registration.evaluate_registration(
+            source, target, threshold, trans_init
+        )
+        print(evaluation)
+        print("Initial Transformation is:")
+        print(trans_init)
+        draw_registration_result(source, target, trans_init, title="Initial Transform")
 
     reg = o3d.pipelines.registration.registration_generalized_icp(
         source, target, 0.5, trans_init,
@@ -1314,7 +1324,7 @@ def ScanMatch(
     )
     
     trans_final = reg.transformation
-    if showResult:
+    if showResult == 2 or showResult == 3:
         print("Apply GICP ICP")
         print(reg)
         print("Transformation is:")

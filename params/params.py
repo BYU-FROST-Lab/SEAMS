@@ -15,10 +15,12 @@ class LoopClosure:
     distMax: int = 50
     skipFrames: int = 0
     intraNearKeyFrames: int = 5     # Same session
-    interNearKeyFrames: int = 5     # Between session. If prior poses have been sparsified (blocks) number should be 0 or small. Otherwise, 5 tends to be sufficient.
+    interNearKeyFramesPrior: int = 5     # >=0 Between session. Number of key frames on each side of the current pose to use for registration to the prior session.
+    interNearKeyFramesCurrent: int = 0     # >=0 Between session. Number of key frames to use in current window in addition to the current pose for registration to the prior session.
     maxPossibleConnections: int = 1
     fitnessThreshold: float = 0.5
-    showScanMatchResult: bool = False
+    showScanMatchResult: int = 0    # 0 = no visualization, 1 = visualize initial alignment, 2 = visualize final alignment, 3 = visualize both
+    showResultSkipFrames: int = 10   # 0 = visualize every frame, 1 = visualize every other frame, 2 = visualize every third frame, etc.
     debug: bool = False
 
 # Geometry policy
@@ -62,7 +64,7 @@ class Params:
 
     # Fixed Lag Smoother Params
     fixedLagCurrentSession: bool = False
-    fixedLagKeepFrames: int = 50
+    fixedLagKeepFrames: int = 10
     fixedLagMarg: FixedLagMarginalizationType = FixedLagMarginalizationType.DENSE
 
     # Symbol values
@@ -74,8 +76,8 @@ class Params:
 
     # Save session params
     moduleDir: Path = Path(__file__).parents[1]
-    loadSessionDir: str | Path |None = None
-    saveSessionDir: str | Path = moduleDir / "results/nc/default_session"
+    loadSessionDir: Path |None = None
+    saveSessionDir: Path = moduleDir / "results/nc/default_session"
 
     # Current session params
     dataDir: Path = Path("/home/benb/data_sets/NewerCollege/ros2")

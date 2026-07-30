@@ -61,15 +61,13 @@ class LiveMapVisualizer:
         window_name: str = "Live Map",
     ):
         '''
-        :param session: A SessionManager (or SessionUpdater — uses .combined if so).
+        :param session: A SessionManager.
         :param voxel_size: Voxel size used when downsampling the prior and fixed-lag layers.
         :param scan_voxel_size: Voxel size for the current-scan layer (None = full resolution).
         :param colors: Override display colors for "prior", "fixed_lag", and/or "scan".
         :param window_name: Title of the Open3D window.
         '''
-        # Accept SessionUpdater by transparently unwrapping .combined
-        if hasattr(session, 'combined'):
-            session = session.combined
+        
         if not isinstance(session, SessionManager):
             raise TypeError(f"Expected SessionManager, got {type(session)}")
 
