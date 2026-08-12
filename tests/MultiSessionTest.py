@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 import open3d as o3d
 from scipy.spatial import KDTree
+import pickle
+
 
 # Local imports
 import gtsam
@@ -23,6 +25,7 @@ from common.LiveMapVisualizer import LiveMapVisualizer
 from common.kissicp_odom import KissICPOdom
 from params.params import Params
 from ros2.readFromRosbags import ReadTopicsFromRosbag, GroundTruthLoader
+from sparcification.NFR import GraphSparsification
 
 # ------------------------------------------------------------
 # Visualization flags — override these or use --viz on the CLI
@@ -53,6 +56,10 @@ def run_session(params: Params = Params(), enable_matplotlib: bool = ENABLE_MATP
 
     MAX_COUNT = 5
     FIXED_WINDOW = False
+    SAVE_FULL_SESSION = False
+    SAME_SESSION_COV_CHANGE_PLOT = False
+    SAVE_COVARIANCE_OF_CURRENT_POSE = False
+    SAVE_UPDATE_TIMING = False
 
     show_mpl = enable_matplotlib
     show_o3d = enable_open3d
@@ -89,6 +96,13 @@ def run_session(params: Params = Params(), enable_matplotlib: bool = ENABLE_MATP
 
     start_time = time.time()
     firstTimestamp = None
+    foundFirstIntraLoop = False
+    prevISAM2 = gtsam.ISAM2()
+    sscp_dets: dict [int,list[float]] = {}
+    whole_graph_info_dets: list[float] = []
+    cov_current_pose_arr = []
+    updateTimes = []
+
     for topic, timestamp, xyz_points in bag1.next_message():
         if firstTimestamp is None:
             firstTimestamp = timestamp
@@ -102,14 +116,16 @@ def run_session(params: Params = Params(), enable_matplotlib: bool = ENABLE_MATP
 
         if firstPass:
             assert relPose_odom is None, "Relative pose should be None for the first keyframe"
+            update_time = time.time()
             if gt is not None:
                 # gtPose = gt.get_closest_gt(timestamp)
                 # print(f"Initial pose is: \n{gtPose}")
-                currentSession.Update(deskewed_points, gtPose, timestamp=timestamp)
+                sessionResult = currentSession.Update(deskewed_points, gtPose, timestamp=timestamp)
                 # poses.append(gtPose)
             else:
-                currentSession.Update(deskewed_points, composedPose_odom, timestamp=timestamp)
+                sessionResult = currentSession.Update(deskewed_points, composedPose_odom, timestamp=timestamp)
                 # poses.append(composedPose_odom)
+            update_time = time.time() - update_time
             firstPass = False
             lastPose_odom = composedPose_odom
         else:
@@ -120,14 +136,88 @@ def run_session(params: Params = Params(), enable_matplotlib: bool = ENABLE_MATP
             # T_odom_to_robot = odom_to_robot_frame(lastPose_odom, currentSession.values.atPose3(currentSession.values.keys()[-1]))
             # relPose_tmp = T_odom_to_robot.compose(relPose_tmp)
             # poses.append(relPose_tmp)
-            currentSession.Update(deskewed_points, relPose=relPose_tmp, timestamp=timestamp)
+            update_time = time.time()
+            sessionResult = currentSession.Update(deskewed_points, relPose=relPose_tmp, timestamp=timestamp)
+            update_time = time.time() - update_time
             lastPose_odom = composedPose_odom
             # print(f"Frame {totalCnt}: relative pose computed")
             # print(f"    Translation: {relPose_tmp.translation()}, Rotation: {relPose_tmp.rotation().rpy()}")
 
         if totalCnt == 35:
             pass
-        
+
+        if SAME_SESSION_COV_CHANGE_PLOT:
+            start = time.time()
+
+            ################################
+            # Get Covariance of first loop #
+            ################################
+
+            # if sessionResult.numIntraLoops > 0 and not foundFirstIntraLoop:
+            #     foundFirstIntraLoop = True
+            #     refKeys = currentSession.values.keys()[:-1]
+            #     for k in refKeys:
+            #         sscp_dets[k] = [np.linalg.det(prevISAM2.marginalInformation(k))] # Take determinant of translation part of covariance matrix
+
+            # if foundFirstIntraLoop:
+            #     currIsam = currentSession.isam2
+            #     for k in refKeys:
+            #         if k in sscp_dets:
+            #             sscp_dets[k].append(np.linalg.det(currIsam.marginalCovariance(k))) # Take determinant of translation part of covariance matrix
+            #         else:
+            #             sscp_dets[k] = [np.linalg.det(currIsam.marginalCovariance(k))] # Take determinant of translation part of covariance matrix
+            #     print(f"Time to calc full det: {time.time() - start}")
+
+            ###############################
+            # Get Covariance of New nodes #
+            ###############################
+
+            refKeys = currentSession.GetKeys(currentSession.addToPriorSymbol)
+            currIsam = currentSession.isam2
+            for k in refKeys:
+                if k in sscp_dets:
+                    sscp_dets[k].append(np.linalg.det(currIsam.marginalCovariance(k))) # Take determinant of translation part of covariance matrix
+                else:
+                    sscp_dets[k] = [np.linalg.det(currIsam.marginalCovariance(k))] # Take determinant of translation part of covariance matrix
+            print(f"Time to calc full det: {time.time() - start}")
+
+            start = time.time()
+            currentSession.isam2.marginalInformation(k)
+            print(f"Time to calc marg information from isam: {time.time() - start}")
+
+            start = time.time()
+            currentSession.smoother_.marginalCovariance(k)
+            print(f"Time to calc marg information from isam: {time.time() - start}")
+            
+
+
+            ##################################
+            # Get Information of Full window #
+            ##################################
+
+            # refKeys = currentSession.GetMostRecentKeys(params.fixedLagKeepFrames)
+            # if refKeys:
+            #     currIsam = currentSession.isam2
+            #     if sscp_dets:
+            #         sscp_dets[0].append(np.linalg.det(currIsam.jointMarginalInformation(refKeys).fullMatrix())) # Take determinant of translation part of covariance matrix
+            #     else:
+            #         sscp_dets[0] = [np.linalg.det(currIsam.jointMarginalInformation(refKeys).fullMatrix())] # Take determinant of translation part of covariance matrix
+
+            # graph = currentSession.graph
+            # values = currentSession.values
+            # gfg = graph.linearize(values)
+            # gbt = gfg.eliminateMultifrontal()
+            # whole_graph_info_dets.append(gbt.logDeterminant())
+
+            # print(f"Time to calc full det: {time.time() - start}")
+
+        if SAVE_COVARIANCE_OF_CURRENT_POSE:
+            cov = currentSession.smoother_.marginalCovariance(currentSession.lastOdomKey_)
+            cov_current_pose_arr.append(cov)
+
+        if SAVE_UPDATE_TIMING:
+            updateTimes.append(update_time)
+
         # odom.update_last_pose(currentSession.values.atPose3(currentSession.values.keys()[-1]))
         if cnt >= MAX_COUNT: # or totalCnt > 225:
         # if True:
@@ -167,6 +257,7 @@ def run_session(params: Params = Params(), enable_matplotlib: bool = ENABLE_MATP
 
         cnt += 1
         totalCnt += 1
+        prevISAM2 = currentSession.isam2
 
     end_time = time.time()
     bag_time = timestamp - firstTimestamp
@@ -182,14 +273,34 @@ def run_session(params: Params = Params(), enable_matplotlib: bool = ENABLE_MATP
     if show_mpl:
         ax.clear()
     else:
-        ax = None
+        ax = fgtools.plot_graph(gtsam.NonlinearFactorGraph(), gtsam.Values())
+    
     final_graph, final_values, _, _ = currentSession.GetFinalSessionInfo()
+    # if gt is not None:
+    #     ax.plot(gt.array[:,1], gt.array[:,2], color='tab:green', label='Ground Truth', alpha=0.5)
     ax = fgtools.plot_graph(final_graph, final_values, ax=ax, title="Testing Combined Graph", addKeyLabels=False, changeColorBySymbols=True, symbolColors=sessionSymbols)
     # fgtools.plot_graph_covariances(final_values.keys(), final_graph, final_values, ax=ax, changeColorBySymbols=True, symbolColors=sessionSymbols)
 
-    currentSession.SaveSession(params.saveSessionDir)
-    # Save matplotlib figure
-    plt.savefig(params.saveSessionDir / "final_graph.png", dpi=300, bbox_inches='tight')
+    if SAVE_FULL_SESSION:
+        currentSession.SaveSession(params.saveSessionDir)
+        # Save matplotlib figure
+        plt.savefig(params.saveSessionDir / "final_graph.png", dpi=300, bbox_inches='tight')
+    else:
+        Path.mkdir(params.saveSessionDir, exist_ok=True)
+
+    if SAME_SESSION_COV_CHANGE_PLOT:
+        # Save dictionary for plotting elsewhere
+        with open(params.saveSessionDir / "det_of_addToPriorNodes.pkl", "wb") as f:
+            pickle.dump(sscp_dets, f)   
+
+    if SAVE_COVARIANCE_OF_CURRENT_POSE:
+        with open(params.saveSessionDir / "cov_of_currentPoses.pkl", "wb") as f:
+            pickle.dump(cov_current_pose_arr, f)
+
+    if SAVE_UPDATE_TIMING:
+        with open(params.saveSessionDir / "update_timing.pkl", "wb") as f:
+                    pickle.dump(updateTimes, f)
+
     print("Done with session")
     
     # if show_mpl:
@@ -224,10 +335,10 @@ if __name__ == "__main__":
     # Hardcode values for testing purposes #
     ########################################
 
-    # args.dataset = "nc"
-    # args.mission = "quad-hard"
-    # args.load_session_dir = moduleDir / "results/nc/quad-easy/"
-    # args.save_session_dir = moduleDir / "results/nc/quad-medium_prior_quad-easy/"
+    args.dataset = "nc"
+    args.mission = "quad-medium"
+    args.load_session_dir = moduleDir / "results/nc/quad-easy/"
+    args.save_session_dir = moduleDir / "results/nc/quad-medium_cov_current_pose_eval"
 
     # args.dataset = "urban"
     # args.mission = "block1"
@@ -296,13 +407,11 @@ if __name__ == "__main__":
 
     params = Params(
         fixedLagCurrentSession=fixedLagCurrentSession,
-        fixedLagKeepFrames=20,
+        # fixedLagKeepFrames=50,
         # fixedLagMarg=FixedLagMarginalizationType.DENSE,
-        fixedLagMarg=FixedLagMarginalizationType.APPROX_PRIOR,
         rekeyPrior=True,
         loadSessionDir=load_session_dir,
         saveSessionDir=save_session_dir,
-        policyType=DecisionType.FITNESS,
         bagFile=bag_file,
         gtFile=gt_file,
     )

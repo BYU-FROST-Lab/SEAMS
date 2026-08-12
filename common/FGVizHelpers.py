@@ -1345,6 +1345,24 @@ def AddValueToDictList(dictionary: dict[Any, list], key: Any, value: Any):
     else:
         dictionary[key] = [value]
 
+from dataclasses import asdict, is_dataclass
+from enum import Enum
+
+def make_yaml_safe(obj):
+    if is_dataclass(obj):
+        return make_yaml_safe(asdict(obj))
+    elif isinstance(obj, dict):
+        return {k: make_yaml_safe(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [make_yaml_safe(v) for v in obj]
+    elif isinstance(obj, Enum):
+        return obj.name
+    elif isinstance(obj, Path):
+        return str(obj)
+    elif isinstance(obj, (str, int, float, bool, type(None))):
+        return obj
+    else:
+        return str(obj)  # fallback
 
 
     

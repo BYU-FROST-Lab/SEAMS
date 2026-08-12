@@ -11,8 +11,8 @@ class ICP:
 @dataclass
 class LoopClosure:
     noiseScale: float = 1
-    prevFrameSkip: int = 100
-    distMax: int = 50
+    prevFrameSkip: int = 50
+    distMax: int = 20
     skipFrames: int = 0
     intraNearKeyFrames: int = 5     # Same session
     interNearKeyFramesPrior: int = 5     # >=0 Between session. Number of key frames on each side of the current pose to use for registration to the prior session.
@@ -21,7 +21,7 @@ class LoopClosure:
     fitnessThreshold: float = 0.5
     showScanMatchResult: int = 0    # 0 = no visualization, 1 = visualize initial alignment, 2 = visualize final alignment, 3 = visualize both
     showResultSkipFrames: int = 10   # 0 = visualize every frame, 1 = visualize every other frame, 2 = visualize every third frame, etc.
-    debug: bool = False
+    debug: bool = True
 
 # Geometry policy
 @dataclass
@@ -64,8 +64,9 @@ class Params:
 
     # Fixed Lag Smoother Params
     fixedLagCurrentSession: bool = False
-    fixedLagKeepFrames: int = 10
-    fixedLagMarg: FixedLagMarginalizationType = FixedLagMarginalizationType.DENSE
+    fixedLagKeepFrames: int = 20
+    fixedLagMarg: FixedLagMarginalizationType = FixedLagMarginalizationType.APPROX_PRIOR
+    linearFactorMaxNodes: int = 2
 
     # Symbol values
     currSessionSymbolChr: str = 'c'
@@ -95,7 +96,7 @@ class Params:
     ##################################################################
         
     # Decision params
-    policyType: DecisionType = DecisionType.DISTANCE
+    policyType: DecisionType = DecisionType.FITNESS
 
     # Other dataclasses (other structs)
     distancePolicy: DistancePolicy = field(default_factory=DistancePolicy)
