@@ -23,7 +23,7 @@ from params import Params
 from common.customTypes import *
 from metrics import Metrics
 from policy.base import NoDecisionPolicy
-from policy.geometric import DistancePolicy
+from policy.geometric import DistancePolicy, OverlapPolicy
 from policy.registration import FitnessPolicy, InlierRMSEPolicy
 from policy.graphTheoretic import TwoStepConnectivityPolicy
 from policy.probabilistic import RelativeCovariancePolicy
@@ -45,6 +45,7 @@ class SessionManager:
         self.currentEstimate_ = gtsam.Values()
 
         self.pcds_: dict[int, o3d.geometry.PointCloud] = {}
+        self.overlapData_: OverlapData = OverlapData()
         self.timestamps_: dict[int, float] = {}
 
         self.loopCnt_ = 0
@@ -54,6 +55,8 @@ class SessionManager:
             self.decider = NoDecisionPolicy(self.params)
         elif self.params.policyType == DecisionType.DISTANCE:
             self.decider = DistancePolicy(self.params)
+        elif self.params.policyType == DecisionType.OVERLAP:
+            self.decider = OverlapPolicy(self.params)
         elif self.params.policyType == DecisionType.FITNESS:
             self.decider = FitnessPolicy(self.params)
         elif self.params.policyType == DecisionType.INLIER_RMSE:
@@ -66,6 +69,8 @@ class SessionManager:
             raise ValueError(f"SessionManager: Invalid decision policy chosen. {self.params.policyType}")
         
         self.metrics_ = Metrics(self.params.policyType)
+        self.timeToCalcMetricsAndDecision_ = []
+
         self.mappingStartKeys_: list[int] = []
         self.mappingEndKeys_: list[int] = []
         self.mappingStartKeyDets_: dict[int, list] = {}
@@ -206,7 +211,7 @@ class SessionManager:
     def ApproximateLinearFactorAsPrior(self, marginalFactorsIdxs: list, maxNodesToKeep: int=1):
         if maxNodesToKeep < 1:
             raise ValueError(f"maxNodesToKeep must be greater than 0, but got {maxNodesToKeep}")
-        if not marginalFactorsIdxs or not self.currentToPriorAnchors_:
+        if not marginalFactorsIdxs or (not self.currentToPriorAnchors_ and maxNodesToKeep == 1):
             return
         # Find the linear factors
         currGraph = self.smoother_.getFactors()
@@ -298,12 +303,13 @@ class SessionManager:
         
         :return: True if the decision state has changed, False otherwise'''
         if not self.isInitialized_:
-            print("UpdateDecisionState: Waiting for Scan Matching initialization...")
+            print(f"UpdateDecisionState - {self.params.policyType.name}: Waiting for Scan Matching initialization...")
             return False
         ret = False
         previousState = copy(self.decisionState_)
         if self.interLoopTree_ is None:
             return False
+        start = time.time()
         self.metrics_.CalculateMetrics(
             self.smoother_.getISAM2(), 
             self.currentEstimate_, 
@@ -313,15 +319,17 @@ class SessionManager:
             self.pcds_,
             self.decisionState_,
             self.sessionKeys[self.currentSessionSymbol_] if self.currentSessionSymbol_ in self.sessionKeys else [],
-            self.intraLoopKeys_,
+            self.overlapData_,
             )
         self.decisionState_ = self.decider.DetermineDecisionState(self.metrics_)
+        self.timeToCalcMetricsAndDecision_.append(time.time() - start)
 
         if self.decisionState_ == NodeDecision.INITIALIZE:
-            print(f"Waiting for policy initialization...")
+            print(f"DecisionState - {self.params.policyType.name}: Waiting for policy initialization...")
         
         if previousState != self.decisionState_:
-            print(f"DecisionState: {"Localize" if self.decisionState_ == NodeDecision.LOCALIZE else ("Map" if self.decisionState_ == NodeDecision.MAP else "Initialize")}")
+            print(f"DecisionState - {self.params.policyType.name}: "
+                  f"{'Localize' if self.decisionState_ == NodeDecision.LOCALIZE else ('Map' if self.decisionState_ == NodeDecision.MAP else 'Initialize')}")
 
         if previousState == NodeDecision.LOCALIZE and self.decisionState_ == NodeDecision.MAP:
             ret = True
@@ -749,9 +757,19 @@ class SessionManager:
 
             reg = None
             numInterLoops = 0
+
+            pcSource = self.FindRecentKeyFrames(self.params.loopClosure.interNearKeyFramesCurrent)
+            self.overlapData_.currScan = o3d.geometry.PointCloud(pcSource)
+            self.overlapData_.currCenterPoint = self.currentEstimate_.atPose3(self.lastOdomKey_).translation()[:2]
+
             for k in keysToSearch:
                 # ret = self.LoopCheckGivenKey(k, addFactor=True, numNearKeyFrames=self.params.icp.nearKeyFrames)
-                foundInterLoop, ret = self.LoopCheckGivenKey(k, addFactor=True, numNearSourceKeyFrames=self.params.loopClosure.interNearKeyFramesCurrent, numNearTargetKeyFrames=self.params.loopClosure.interNearKeyFramesCurrent)
+                foundInterLoop, ret = self.LoopCheckGivenKey(k, 
+                                                             addFactor=True, 
+                                                             numNearSourceKeyFrames=self.params.loopClosure.interNearKeyFramesCurrent, 
+                                                             numNearTargetKeyFrames=self.params.loopClosure.interNearKeyFramesCurrent,
+                                                             setSubmap=True if reg is None else False
+                                                             )
                 if reg is None:
                     reg = ret
                 if foundInterLoop:
@@ -773,7 +791,12 @@ class SessionManager:
         self.UpdateSmoother()
         return numIntraLoops, numInterLoops
 
-    def LoopCheckGivenKey(self, key:int, addFactor:bool=True, numNearSourceKeyFrames: int = 0, numNearTargetKeyFrames: int = 0) -> tuple[bool, o3d.pipelines.registration.RegistrationResult]:
+    def LoopCheckGivenKey(self, key:int, 
+                          addFactor:bool=True, 
+                          numNearSourceKeyFrames: int = 0, 
+                          numNearTargetKeyFrames: int = 0,
+                          setSubmap: bool = False
+                          ) -> tuple[bool, o3d.pipelines.registration.RegistrationResult]:
 
         foundLoop = False
         currKey = self.lastOdomKey_
@@ -788,6 +811,10 @@ class SessionManager:
             poseTarget = self.priorValues_.atPose3(key)
         else:
             raise Exception(f"Key {gtsam.Symbol(key).string()} is not found in currentEstimate of priorValues")
+
+        if setSubmap:
+            self.overlapData_.closestPriorSubmap = pcTarget
+            self.overlapData_.priorCenterPoint = poseTarget.translation()[:2]
 
         showResult = False
         if self.currTimestamp_ % (self.params.loopClosure.showResultSkipFrames + 1) == 0:
@@ -1005,8 +1032,12 @@ class SessionManager:
     def SaveSession(self, directory:str|Path|None=None):
         if directory is None:
             directory = self.params.saveSessionDir
+        
+        # if self.params.evaluateDecisionTypes:
+        directory = Path(directory) / self.params.policyType.name
+        # else:
+            # directory = Path(directory)
 
-        directory = Path(directory)
         while directory.exists():
             res = input(f"Directory {directory} already exists. Overwrite? (y/[n]): ")
             if res and res.lower()[0] == "y":
@@ -1028,16 +1059,19 @@ class SessionManager:
 
         finalGraph, finalValues, finalPcds, finalTimestamps = self.GetFinalSessionInfo()
         # fgtools.writeG2oWithPrior(self.graph, self.values, str(directory / "graph.g2o"))
+
+        if not fgtools.savePointClouds(finalPcds, str(directory / "scans"), remove_existing=False):
+            print(f"Error saving point clouds to {directory / 'scans'}")
         if not gtsam_unstable.serializeGraphToFile(finalGraph, str(directory / "graph.gtsam")):
             print(f"Error saving graph to {directory / 'graph.gtsam'}")
         if not gtsam_unstable.serializeValuesToFile(finalValues, str(directory / "values.gtsam")):
             print(f"Error saving values to {directory / 'values.gtsam'}")
-        if not fgtools.savePointClouds(finalPcds, str(directory / "scans"), remove_existing=False):
-            print(f"Error saving point clouds to {directory / 'scans'}")
         if not fgtools.saveOdomTUM(finalTimestamps, finalValues, str(directory / "odom_tum.txt")):
             print(f"Error saving odometry to {directory / 'odom_tum.txt'}")
         if not fgtools.saveTimestampsWithKeys(finalTimestamps, str(directory / "timestamps.txt")):
             print(f"Error saving timestamps to {directory / 'timestamps.txt'}")
+        if not fgtools.SaveListToFile(self.timeToCalcMetricsAndDecision_, directory / "timeToCalcMetricsAndDecision.txt"):
+            print(f"Error saving timeToCalcMetricsAndDecision to {directory / 'timeToCalcMetricsAndDecision.txt'}")
 
         # Save params to metadata file
         metadata = fgtools.make_yaml_safe(self.params)

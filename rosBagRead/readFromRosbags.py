@@ -1,14 +1,12 @@
 import os
 import sys
-import math
 from pathlib import Path
 import argparse
-import time
-import pandas as pd
 
 from rosbags.highlevel import AnyReader
 from matplotlib import pyplot as plt
 import numpy as np
+import yaml
 
 import gtsam
 
@@ -24,85 +22,6 @@ from .jitter_buffer import JitterBuffer, BufferedMessage
 # Grab the standard ROS 2 type definitions
 from rosbags.typesys import Stores, get_typestore
 typestore = get_typestore(Stores.ROS2_HUMBLE)
-
-
-
-
-# =========================================================================
-# GET LIDAR POINT CLOUDS FROM ROSBAG
-# =========================================================================
-class GroundTruthLoader:
-    def __init__(self, path_to_gt: str | Path):
-        if not os.path.exists(path_to_gt):
-            raise FileNotFoundError(f"Ground truth file not found: {path_to_gt}")
-        self.gt_df = pd.read_csv(path_to_gt, delimiter=" ")
-        self.gt_df.columns = [
-            "t",
-            "x", "y", "z",
-            "q_x", "q_y", "q_z", "q_w",
-        ]
-        self.gt_arr = self.gt_df[[
-            "t",
-            "x", "y", "z",
-            "q_x", "q_y", "q_z", "q_w",
-        ]].values
-
-    def get_closest_gt(self, timestamp: float):
-        """
-        Get the closest ground truth entry for a given timestamp.
-        """
-        if self.gt_arr.size == 0:
-            raise ValueError("Ground truth array is empty. Ensure the ground truth file is loaded correctly.")
-        gt_times = self.gt_arr[:, 0]
-        closest_idx = np.argmin(np.abs(gt_times - timestamp))
-        gt_row = self.gt_arr[closest_idx]
-
-        gt_dt = abs(gt_row[0] - timestamp)
-        print(f"Using closest GT at t={gt_row[0]:.6f}, bag t={timestamp:.6f}, dt={gt_dt:.3f}s")
-
-        return self._tum_row_to_pose3(gt_row)
-    
-    def _tum_row_to_pose3(self, row: np.ndarray) -> gtsam.Pose3:
-        """
-        Convert a TUM format row to a GTSAM Pose3 object.
-        """
-        if len(row) != 8:
-            raise ValueError("TUM row must have 8 elements: [t, x, y, z, q_x, q_y, q_z, q_w]")
-        
-        return gtsam.Pose3(
-            gtsam.Rot3(
-                row[7], # q_w
-                row[4], # q_x
-                row[5], # q_y
-                row[6], # q_z
-            ),
-            gtsam.Point3(
-                row[1], # x
-                row[2], # y
-                row[3], # z
-            ),
-        )
-    
-    def get_gt_as_values(self, symbol_prefix: str = "g") -> gtsam.Values:
-        """
-        Convert the entire ground truth dataframe to a GTSAM Values object.
-        """
-        values = gtsam.Values()
-        for i, row in enumerate(self.gt_arr):
-            pose = self._tum_row_to_pose3(row)
-            key = gtsam.Symbol(symbol_prefix, i).key()
-            values.insert(key, pose)
-        return values
-    
-    @property
-    def dataframe(self):
-        """Expose the ground truth dataframe for external use."""
-        return self.gt_df
-    
-    @property
-    def array(self):
-        """Expose the ground truth array for external use."""
-        return self.gt_arr
     
 
 # =========================================================================
@@ -115,9 +34,10 @@ class ReadTopicsFromRosbag:
         '''
 
         self.lidar_topics = {
-            "/os_cloud_node/points",
-            "/ouster_top/points",
-            "/ouster/points",
+            "/os_cloud_node/points",    # NC
+            "/ouster_top/points",       # BYU
+            "/ouster/points",           # Ouster
+            "/velodyne_points",         # NCLT
         }
 
         self.valid_topics = {
@@ -129,7 +49,7 @@ class ReadTopicsFromRosbag:
         self.filter_started = False 
         self.first_msg_timestamp = None 
         self.first_heading = None
-        self.path_to_bag = path_to_bag
+        self.path_to_bag = Path(path_to_bag)
         self.waiting_threshold = waiting_threshold
         self.RUN_FULL_SIMULATION = RUN_FULL_SIMULATION
         self.simulation_length_s = simulation_length_s
@@ -167,6 +87,10 @@ class ReadTopicsFromRosbag:
         return xyz_clean
 
     def next_message(self):
+        # Determine total rosbag duration once
+        if not hasattr(self, 'bag_duration') or self.bag_duration is None:
+            self.get_bag_time_range()
+
         with AnyReader([Path(self.path_to_bag)], default_typestore=typestore) as reader:
             connections = [x for x in reader.connections]
 
@@ -223,7 +147,20 @@ class ReadTopicsFromRosbag:
                             self.exit_flag = True
                             print(f"Simulation length of {self.simulation_length_s} seconds reached. Exiting loop.")
                         if timestamp - self.first_msg_timestamp > self.increment_counter:
-                            print(f"Reached {self.increment_counter} seconds in data stream loop.")
+
+                            elapsed_time = timestamp - self.bag_start_timestamp
+
+                            completion_percentage = (
+                                elapsed_time / self.bag_duration
+                            ) * 100.0
+
+                            completion_percentage = min(100.0, max(0.0, completion_percentage))
+
+                            print(
+                                f"Reached {self.increment_counter} seconds in data stream loop. "
+                                f"Completion: {completion_percentage:.1f}%"
+                            )
+
                             self.increment_counter += self.increment_counter_step
                     yield connection.topic, timestamp, xyz_points
                 if self.exit_flag:
@@ -240,6 +177,49 @@ class ReadTopicsFromRosbag:
                 continue
         
         return
+
+    def get_bag_time_range(self):
+        """Get the start and end timestamps of the rosbag."""
+
+        print("Calculating bag duration...")
+
+        with open(self.path_to_bag / "metadata.yaml", "r") as f:
+            metadata = yaml.safe_load(f)
+
+        self.bag_duration = metadata["rosbag2_bagfile_information"]["duration"]["nanoseconds"] * 1e-9
+
+        self.bag_start_timestamp = metadata["rosbag2_bagfile_information"]["starting_time"]["nanoseconds_since_epoch"] * 1e-9
+
+        print(
+            f"Rosbag duration: {self.bag_duration:.2f} seconds "
+            f"({self.bag_duration / 60.0:.2f} minutes)"
+        )
+        # with AnyReader([Path(self.path_to_bag)], default_typestore=typestore) as reader:
+        #     start_time = None
+        #     end_time = None
+
+        #     for connection, timestamp, _rawdata in reader.messages():
+        #         if connection.topic not in self.valid_topics:
+        #             continue
+
+        #         if start_time is None:
+        #             start_time = timestamp
+
+        #         end_time = timestamp
+
+        # if start_time is None or end_time is None:
+        #     raise RuntimeError("No valid LiDAR messages found in rosbag.")
+
+        # self.bag_start_timestamp = start_time * 1e-9
+        # self.bag_end_timestamp = end_time * 1e-9
+        # self.bag_duration = (
+        #     self.bag_end_timestamp - self.bag_start_timestamp
+        # )
+
+        # print(
+        #     f"Rosbag duration: {self.bag_duration:.2f} seconds "
+        #     f"({self.bag_duration / 60.0:.2f} minutes)"
+        # )
 
 def main():
     parser = argparse.ArgumentParser(description="Run SLAM trajectory mission loops across explicit rosbags.")

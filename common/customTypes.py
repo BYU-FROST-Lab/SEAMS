@@ -1,6 +1,8 @@
 from scipy.spatial import KDTree
 from dataclasses import dataclass, field
 from enum import Enum, auto
+import open3d as o3d
+import numpy as np
 
 
 @dataclass
@@ -9,12 +11,26 @@ class TreeData:
     keys: list[int]
     points: list[list[float]]
 
+@dataclass
+class OverlapData:
+    closestPriorSubmap: o3d.geometry.PointCloud = o3d.geometry.PointCloud()
+    # priorEll: float = 0.0
+    priorCenterPoint: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0]))
+    priorMinPoint: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0]))
+    priorMaxPoint: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0]))
+    currScan: o3d.geometry.PointCloud = o3d.geometry.PointCloud()
+    # currEll: float = 0.0
+    currCenterPoint: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0]))
+    currMinPoint: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0]))
+    currMaxPoint: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0]))
+
 class DecisionType(Enum):
     # Don't make any decisions, just localize
     NONE = auto()
 
     # geometric methods
     DISTANCE = auto()
+    OVERLAP = auto()
 
     # registration
     FITNESS = auto()
@@ -22,8 +38,8 @@ class DecisionType(Enum):
 
     # graph theoretic
     TWO_STEP_VALIDATION = auto()
-    TWO_OPTION = auto()
-    SUPER_NODE_PRIOR = auto()
+    # TWO_OPTION = auto()
+    # SUPER_NODE_PRIOR = auto()
 
     # probablistic
     RELATIVE_COVARIANCE = auto()

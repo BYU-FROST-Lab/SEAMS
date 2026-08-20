@@ -14,7 +14,7 @@ class TwoStepConnectivityPolicy(NodeDecisionPolicy):
         super().__init__(params)
         self.d_bar_hist = []
         self.lastState = NodeDecision.INITIALIZE
-        self.debug = True
+        self.debug = params.twoStepConnectivityPolicy.debug
         if params.twoStepConnectivityPolicy.showDLplot:
             _, self.ax = plt.subplots()
         

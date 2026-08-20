@@ -12,7 +12,7 @@ class ICP:
 class LoopClosure:
     noiseScale: float = 1
     prevFrameSkip: int = 50
-    distMax: int = 20
+    distMax: int = 50
     skipFrames: int = 0
     intraNearKeyFrames: int = 5     # Same session
     interNearKeyFramesPrior: int = 5     # >=0 Between session. Number of key frames on each side of the current pose to use for registration to the prior session.
@@ -20,13 +20,19 @@ class LoopClosure:
     maxPossibleConnections: int = 1
     fitnessThreshold: float = 0.5
     showScanMatchResult: int = 0    # 0 = no visualization, 1 = visualize initial alignment, 2 = visualize final alignment, 3 = visualize both
-    showResultSkipFrames: int = 10   # 0 = visualize every frame, 1 = visualize every other frame, 2 = visualize every third frame, etc.
+    showResultSkipFrames: int = 0   # 0 = visualize every frame, 1 = visualize every other frame, 2 = visualize every third frame, etc.
     debug: bool = True
 
 # Geometry policy
 @dataclass
 class DistancePolicy:
     minDistance: float | int = 20
+
+# Overlap policy
+@dataclass
+class OverlapPolicy:
+    overlapThreshold: float = 0.7   # [0, 1]
+    debug: bool = False
 
 # Registration policy
 @dataclass
@@ -45,7 +51,8 @@ class InlierRMSEPolicy:
 @dataclass
 class TwoStepConnectivityPolicy:
     movingAverageLength: int = 40
-    showDLplot: bool = True
+    showDLplot: bool = False
+    debug: bool = False
 
 # Probabilistic
 @dataclass
@@ -53,7 +60,7 @@ class RelativeCovariancePolicy:
     threshold: list[float] = field(
         default_factory=lambda: [1., 1., 1.]    # [x, y, z, det]
         )
-    debug: bool = True
+    debug: bool = False
 
 
 @dataclass
@@ -81,9 +88,11 @@ class Params:
     saveSessionDir: Path = moduleDir / "results/nc/default_session"
 
     # Current session params
+    dataset: str = "nc"
+    mission: str = "quad-easy"
     dataDir: Path = Path("/home/benb/data_sets/NewerCollege/ros2")
-    bagFile: Path | None = dataDir / "quad-easy"
-    gtFile: Path | None = dataDir / "ground_truth_tum/gt-nc-quad-hard.csv"
+    bagFile: Path | None = dataDir / mission
+    gtFile: Path | None = dataDir / f"ground_truth_tum/gt-nc-{mission}.csv"
 
     kissICPConfigFile: Path = Path("/home/benb/blocklio/python/params/kiss_icp.yaml")
     
@@ -100,6 +109,7 @@ class Params:
 
     # Other dataclasses (other structs)
     distancePolicy: DistancePolicy = field(default_factory=DistancePolicy)
+    overlapPolicy: OverlapPolicy = field(default_factory=OverlapPolicy)
     fitnessPolicy: FitnessPolicy = field(default_factory=FitnessPolicy)
     inlierRMSEPolicy: InlierRMSEPolicy = field(default_factory=InlierRMSEPolicy)
     twoStepConnectivityPolicy: TwoStepConnectivityPolicy = field(default_factory=TwoStepConnectivityPolicy)

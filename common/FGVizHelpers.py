@@ -1365,6 +1365,16 @@ def make_yaml_safe(obj):
         return str(obj)  # fallback
 
 
+def SaveListToFile(listToSave:list, filename:str|Path, sort:bool=False) -> bool:
+    if not listToSave:
+        return False
+    filename = Path(filename)
+    if sort:
+        listToSave = sorted(listToSave)
+    with open(filename, "w") as f:
+        for item in listToSave:
+            f.write(f"{item}\n")
+    return True
     
     
 import io

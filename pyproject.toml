@@ -21,7 +21,7 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["common*", "metrics*", "policy*", "params*", "multiSession*", "sparcification*", "ros2*"]
+include = ["common*", "metrics*", "policy*", "params*", "multiSession*", "sparcification*", "rosBagRead*"]
 exclude = ["tests*", "environment*",]
 
 [tool.uv.sources]

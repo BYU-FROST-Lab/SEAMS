@@ -16,5 +16,18 @@ class DistancePolicy(NodeDecisionPolicy):
                 return NodeDecision.MAP
 
         return NodeDecision.LOCALIZE
+
+
+class OverlapPolicy(NodeDecisionPolicy):
+    def DetermineDecisionState(self, metrics: Metrics) -> NodeDecision:
+        if not self.initialized:
+            if metrics.overlapRatio > self.params.overlapPolicy.overlapThreshold:
+                self.initialized = True
+            else:
+                return NodeDecision.INITIALIZE
+        if metrics.overlapRatio < self.params.overlapPolicy.overlapThreshold:
+            return NodeDecision.MAP
+
+        return NodeDecision.LOCALIZE
     
     

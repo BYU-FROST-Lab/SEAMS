@@ -21,4 +21,4 @@ class NoDecisionPolicy(NodeDecisionPolicy):
         self.initialized = True
 
     def DetermineDecisionState(self, metrics: Metrics) -> NodeDecision:
-        return NodeDecision.LOCALIZE
+        return NodeDecision.MAP

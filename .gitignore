@@ -6,6 +6,7 @@
 *.ini
 results/
 TestResults/
+policy_evaluation/
 *.lock
 
 
