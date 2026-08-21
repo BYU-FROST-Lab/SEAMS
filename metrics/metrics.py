@@ -65,13 +65,13 @@ class Metrics:
         if DecisionType.TWO_STEP_VALIDATION in self.method_:
             self.gtsamGraph = cleanFactorGraph(isam)
             self.gtsamValues = isam.calculateEstimate()
-            keysToUse = priorTreeData.keys.copy()
-            if len(currentKeys) > self.params.fixedLagKeepFrames:
-                keysToUse += currentKeys[-self.params.fixedLagKeepFrames:]
-            else:
-                keysToUse += currentKeys
-            self.CreateNXGraph(keysToUse=keysToUse)
-            self.ComputeL()
+            # keysToUse = priorTreeData.keys.copy()
+            # if len(currentKeys) > self.params.fixedLagKeepFrames:
+            #     keysToUse += currentKeys[-self.params.fixedLagKeepFrames:]
+            # else:
+            #     keysToUse += currentKeys
+            # self.CreateNXGraph(keysToUse=keysToUse)
+            self.CreateNXGraph()
 
         if DecisionType.RELATIVE_COVARIANCE in self.method_:
             # Get the relative covariance between the last pose (next one to be marginalized out) and the closest prior pose

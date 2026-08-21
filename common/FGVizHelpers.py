@@ -963,6 +963,79 @@ def loadPosePCDs(directory: str) -> dict[int, o3d.geometry.PointCloud]:
 
     return pcds
 
+def discoverScanSymbols(scans_root: str | Path) -> list[str]:
+    """Return sorted list of single-letter subdirectory names found under scans_root."""
+    scans_root = Path(scans_root)
+    if not scans_root.exists():
+        return []
+    return sorted(
+        d.name for d in scans_root.iterdir()
+        if d.is_dir() and len(d.name) == 1 and d.name.isalpha()
+    )
+
+
+def saveSymbolPCDs(pcds: dict[int, o3d.geometry.PointCloud], scans_root: str | Path) -> bool:
+    """Save point clouds grouped by GTSAM symbol character.
+
+    Each cloud is written to ``{scans_root}/{char}/{index}.pcd``.  Existing
+    sibling directories are left untouched so multiple policies can safely
+    write to the same root; identical index files are silently overwritten.
+    """
+    if not pcds:
+        print("No point clouds to save.")
+        return False
+
+    scans_root = Path(scans_root)
+    ret = True
+    for key, pcd in pcds.items():
+        s = gtsam.Symbol(key)
+        char = chr(s.chr())
+        idx = s.index()
+        char_dir = scans_root / char
+        char_dir.mkdir(parents=True, exist_ok=True)
+        filename = str(char_dir / f"{idx}.pcd")
+        if not o3d.io.write_point_cloud(filename, pcd):
+            print(f"Failed to save point cloud for key {gtsam.Symbol(key).string()} to {filename}")
+            ret = False
+    return ret
+
+
+def loadSymbolPCDs(scans_root: str | Path,
+                   keys: list[int] | None = None,
+                   sharedScans: dict[int, o3d.geometry.PointCloud] | None = None
+                   ) -> dict[int, o3d.geometry.PointCloud]:
+    """Load point clouds from a ``{scans_root}/{char}/{index}.pcd`` layout.
+
+    Returns a dict mapping full GTSAM Symbol keys (``Symbol(char, index).key()``)
+    to their Open3D PointCloud.  If *keys* is provided only those keys are loaded.
+    If *sharedScans* is provided, it is used to load the point clouds for the keys that are not in *keys*.
+    """
+    scans_root = Path(scans_root)
+    key_set = set(keys) if keys is not None else None
+
+    pcds: dict[int, o3d.geometry.PointCloud] = {}
+    if discoverScanSymbols(scans_root):
+        for symbol_dir in sorted(scans_root.iterdir()):
+            if not symbol_dir.is_dir() or len(symbol_dir.name) != 1 or not symbol_dir.name.isalpha():
+                continue
+            char = symbol_dir.name
+            pcd_files = sorted(symbol_dir.glob("*.pcd"), key=lambda p: int(p.stem))
+            for pcd_file in pcd_files:
+                idx = int(pcd_file.stem)
+                gtsam_key = gtsam.Symbol(char, idx).key()
+                if key_set is not None and gtsam_key not in key_set:
+                    continue
+                if sharedScans is not None and gtsam_key in sharedScans:
+                    pcd = sharedScans[gtsam_key]
+                else:
+                    pcd = o3d.io.read_point_cloud(str(pcd_file))
+                pcds[gtsam_key] = pcd
+    else:
+        pcds = loadPosePCDs(str(scans_root))
+
+    return pcds
+
+
 def loadBlockPCDs(directory: str) -> dict[str, o3d.geometry.PointCloud]:
     block_pcds = {}
 

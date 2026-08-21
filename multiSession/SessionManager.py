@@ -103,8 +103,6 @@ class SessionManager:
         self.priorKeyToFactorIndexDict_: dict[int, list[int]] = {}
 
         if priorSessionDir is not None:
-            self.isInitialized_ = False
-            self.decisionState_ = NodeDecision.INITIALIZE
             self.LoadSession(priorSessionDir)
         else:
             self.isInitialized_ = True
@@ -1033,10 +1031,10 @@ class SessionManager:
         if directory is None:
             directory = self.params.saveSessionDir
         
-        # if self.params.evaluateDecisionTypes:
-        directory = Path(directory) / self.params.policyType.name
-        # else:
-            # directory = Path(directory)
+        if self.params.loadSessionDir:
+            directory = Path(directory) / self.params.policyType.name
+        else:
+            directory = Path(directory)
 
         while directory.exists():
             res = input(f"Directory {directory} already exists. Overwrite? (y/[n]): ")
@@ -1060,8 +1058,15 @@ class SessionManager:
         finalGraph, finalValues, finalPcds, finalTimestamps = self.GetFinalSessionInfo()
         # fgtools.writeG2oWithPrior(self.graph, self.values, str(directory / "graph.g2o"))
 
-        if not fgtools.savePointClouds(finalPcds, str(directory / "scans"), remove_existing=False):
-            print(f"Error saving point clouds to {directory / 'scans'}")
+        # PCDs are stored once in the base directory (parent of the policy dir)
+        # under scans/{A,B,C}/ so they can be shared across policies.
+        if self.params.loadSessionDir:
+            scans_root = directory.parent / "scans"
+        else:
+            scans_root = directory / "scans"
+        
+        if not fgtools.saveSymbolPCDs(finalPcds, scans_root):
+            print(f"Error saving point clouds to {scans_root}")
         if not gtsam_unstable.serializeGraphToFile(finalGraph, str(directory / "graph.gtsam")):
             print(f"Error saving graph to {directory / 'graph.gtsam'}")
         if not gtsam_unstable.serializeValuesToFile(finalValues, str(directory / "values.gtsam")):
@@ -1080,7 +1085,11 @@ class SessionManager:
 
         print(f"Done saving session.")
 
-    def LoadSession(self, directory:str|Path|None=None):
+    def LoadSession(self, directory:str|Path|None=None, sharedScans: dict[int, o3d.geometry.PointCloud] | None = None):
+
+        self.isInitialized_ = False
+        self.decisionState_ = NodeDecision.INITIALIZE
+        
         if directory is None:
             directory = self.params.loadSessionDir
             if directory is None:
@@ -1092,29 +1101,72 @@ class SessionManager:
         
         graphFile = directory / "graph.gtsam"
         valuesFile = directory / "values.gtsam"
-        scansDir = directory / "scans"
         odomFile = directory / "odom_tum.txt"
         timestampsFile = directory / "timestamps.txt"
+
+        # Detect whether this is the new shared-scans layout:
+        # scans/ lives in the parent (base) dir and has single-letter subdirs.
+        # baseScansDir = directory.parent / "scans"
+        # legacyScansDir = directory / "scans"
+        # sharedScanSymbols = fgtools.discoverScanSymbols(baseScansDir)
+        # useSharedScans = bool(sharedScanSymbols)
+
+        # scansDir = baseScansDir if useSharedScans else legacyScansDir
+
+        if Path(directory.parent / "scans").exists():
+            scansDir = directory.parent / "scans"
+        elif Path(directory / "scans").exists():
+            scansDir = directory / "scans"
+        else:
+            raise ValueError(f"LoadSession: Can't find 'scans' directory in directory or its parent - {directory}")
 
         if not graphFile.exists() or not valuesFile.exists() or not scansDir.exists() or not odomFile.exists() or not timestampsFile.exists():
             raise FileNotFoundError(f"One or more files in {directory} are missing. Required files: graph.gtsam, values.gtsam, scans/, odom_tum.txt, timestamps.txt")
 
         self.priorGraph_ = gtsam_unstable.deserializeGraphFromFile(str(graphFile))
         self.priorValues_ = gtsam_unstable.deserializeValuesFromFile(str(valuesFile))
-        self.pcds_ = fgtools.loadPosePCDs(str(scansDir))
         self.timestamps_ = fgtools.loadTimestampsWithKeys(str(timestampsFile))
 
+        # if useSharedScans:
+            # New layout: keys on disk already use the correct symbol characters.
+            # Set prior/addToPrior from the folders that are actually represented
+            # in the loaded values; no RenameKeys needed.
+            # if sharedScanSymbols:
+            #     self.addToPriorSymbol_ = chr(ord(sharedScanSymbols[-1]) + 1)
+            # else:
+            #     raise RuntimeError("LoadSession: sharedScanSymbols is empty.")
+            #     self.addToPriorSymbol_ = 'A'
+
+        sharedScanSymbols = fgtools.discoverScanSymbols(scansDir)
+        
+        self.pcds_ = fgtools.loadSymbolPCDs(scansDir, keys=list(self.priorValues_.keys()), sharedScans=sharedScans)
+        if not self.pcds_:
+            raise ValueError("LoadSession: pcds after loading is still empty!")
+        
+        self.priorSessionSymbols_ = deepcopy(sharedScanSymbols)
+        if not self.priorSessionSymbols_:
+            self.priorSessionSymbols_ = set([chr(gtsam.Symbol(k).chr()) for k in self.pcds_.keys()])
+
+            # Legacy flat layout: full GTSAM key as filename, may need RenameKeys.
+            # self.pcds_ = fgtools.loadPosePCDs(str(scansDir))
+        if self.priorSessionSymbols_:
+            self.addToPriorSymbol_ = chr(ord(list(self.priorSessionSymbols_)[-1]) + 1)
+        else:
+            raise RuntimeError("LoadSession: sharedScanSymbols is empty.")
+            self.addToPriorSymbol_ = 'A'
 
         valuesKeys = set(self.priorValues_.keys())
         if valuesKeys != set(self.pcds_.keys()) or valuesKeys != set(self.timestamps_.keys()):
             raise ValueError(f"LoadSession: Keys in values, scans, and timestamps do not match. \
-                             # Value keys: {len(self.priorValues_.keys())}, # Scan keys: {len(self.pcds_.keys())}, \
-                             # Timestamp keys: {len(self.timestamps_.keys())}")
-        
-        if self.params.rekeyPrior:
-            self.priorGraph_, self.priorValues_ = self.RenameKeys(chars=self.params.priorSessionSymbolChrs,
-                                                                  autoRename=self.params.autoRename,
-                                                                  updateOptimization=False)
+                                # Value keys: {len(self.priorValues_.keys())}, # Scan keys: {len(self.pcds_.keys())}, \
+                                # Timestamp keys: {len(self.timestamps_.keys())}")
+
+        if not sharedScanSymbols:
+
+            if self.params.rekeyPrior:
+                self.priorGraph_, self.priorValues_ = self.RenameKeys(chars=self.params.priorSessionSymbolChrs,
+                                                                      autoRename=self.params.autoRename,
+                                                                      updateOptimization=False)
 
         self.UpdateSmoother(reset=True)
         self.UpdatePriorTree()
@@ -1122,7 +1174,7 @@ class SessionManager:
 
         valuesKeys = set(self.priorValues_.keys())
         if valuesKeys != set(self.pcds_.keys()) or valuesKeys != set(self.timestamps_.keys()):
-            raise ValueError(f"LoadSession: Keys in values, scans, and timestamps do not match after rekeying. " \
+            raise ValueError(f"LoadSession: Keys in values, scans, and timestamps do not match after loading. " \
                              f"# Value keys: {len(self.priorValues_.keys())}, # Scan keys: {len(self.pcds_.keys())}, " \
                              f"# Timestamp keys: {len(self.timestamps_.keys())}")
 

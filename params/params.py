@@ -17,11 +17,11 @@ class LoopClosure:
     intraNearKeyFrames: int = 5     # Same session
     interNearKeyFramesPrior: int = 5     # >=0 Between session. Number of key frames on each side of the current pose to use for registration to the prior session.
     interNearKeyFramesCurrent: int = 0     # >=0 Between session. Number of key frames to use in current window in addition to the current pose for registration to the prior session.
-    maxPossibleConnections: int = 1
+    maxPossibleConnections: int = 5
     fitnessThreshold: float = 0.5
     showScanMatchResult: int = 0    # 0 = no visualization, 1 = visualize initial alignment, 2 = visualize final alignment, 3 = visualize both
     showResultSkipFrames: int = 0   # 0 = visualize every frame, 1 = visualize every other frame, 2 = visualize every third frame, etc.
-    debug: bool = True
+    debug: bool = False
 
 # Geometry policy
 @dataclass
@@ -50,9 +50,9 @@ class InlierRMSEPolicy:
 # Graph Theoretic
 @dataclass
 class TwoStepConnectivityPolicy:
-    movingAverageLength: int = 40
-    showDLplot: bool = False
-    debug: bool = False
+    movingAverageLength: int = 10
+    showDLplot: bool = True
+    debug: bool = True
 
 # Probabilistic
 @dataclass
@@ -71,21 +71,19 @@ class Params:
 
     # Fixed Lag Smoother Params
     fixedLagCurrentSession: bool = False
-    fixedLagKeepFrames: int = 20
+    fixedLagKeepFrames: int = 10
     fixedLagMarg: FixedLagMarginalizationType = FixedLagMarginalizationType.APPROX_PRIOR
     linearFactorMaxNodes: int = 2
 
     # Symbol values
     currSessionSymbolChr: str = 'c'
-    addToPriorSymbolChr: str = 't'
+    addToPriorSymbolChr: str = 'A'
     priorSessionSymbolChrs: list[str] = field(default_factory=list)
     rekeyPrior: bool = True
     autoRename: bool = True
-
-    # Save session params
-    moduleDir: Path = Path(__file__).parents[1]
-    loadSessionDir: Path |None = None
-    saveSessionDir: Path = moduleDir / "results/nc/default_session"
+        
+    # Decision params
+    policyType: DecisionType = DecisionType.FITNESS
 
     # Current session params
     dataset: str = "nc"
@@ -93,6 +91,11 @@ class Params:
     dataDir: Path = Path("/home/benb/data_sets/NewerCollege/ros2")
     bagFile: Path | None = dataDir / mission
     gtFile: Path | None = dataDir / f"ground_truth_tum/gt-nc-{mission}.csv"
+
+    # Save session params
+    moduleDir: Path = Path(__file__).parents[1]
+    loadSessionDir: Path |None = None
+    saveSessionDir: Path = moduleDir / "results/nc/default_session"
 
     kissICPConfigFile: Path = Path("/home/benb/blocklio/python/params/kiss_icp.yaml")
     
@@ -103,9 +106,6 @@ class Params:
     ##################################################################
     # Decision Policy Params
     ##################################################################
-        
-    # Decision params
-    policyType: DecisionType = DecisionType.FITNESS
 
     # Other dataclasses (other structs)
     distancePolicy: DistancePolicy = field(default_factory=DistancePolicy)

@@ -61,7 +61,7 @@ class TwoStepConnectivityPolicy(NodeDecisionPolicy):
         if self.params.twoStepConnectivityPolicy.showDLplot:
             plot_d_and_lambda(d_bar, float(mu - 2*sigma), lambda2, ax=self.ax)
 
-        return NodeDecision.LOCALIZE
+        # return NodeDecision.LOCALIZE # Debugging purposes when don't want to switch to mapping mode
         return ret
 
 

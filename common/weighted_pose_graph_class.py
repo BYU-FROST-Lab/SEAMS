@@ -41,7 +41,11 @@ from common.FGVizHelpers import createSubGraph
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 class WeightedPoseGraph:
     # Constructor
-    def __init__(self, gtsamGraph:gtsam.NonlinearFactorGraph=gtsam.NonlinearFactorGraph(), gtsamValues:gtsam.Values=gtsam.Values(), criteria=['t_opt', 'e_opt'], keysToUse:list[int]=[]):
+    def __init__(self, gtsamGraph:gtsam.NonlinearFactorGraph=gtsam.NonlinearFactorGraph(), 
+                 gtsamValues:gtsam.Values=gtsam.Values(), 
+                 criteria=['t_opt', 'e_opt'], 
+                 keysToUse:list[int]=[]
+                 ):
         '''
         criteria should be a list of any of the following 'd_opt', 't_opt', or 'e_opt'
         '''
@@ -55,7 +59,7 @@ class WeightedPoseGraph:
         for k in gtsamValues.keys():
             pose3 = gtsamValues.atPose3(k)
             p = [pose3.x(), pose3.y()]
-            self.nx_graph.add_node(k, pose=p, theta=pose3.rotation().yaw())
+            self.nx_graph.add_node(k, pose=p, theta=pose3.rotation().yaw()) # TODO: Make this 6D
         for i in range(gtsamGraph.size()):
             f = gtsamGraph.at(i)
             if isinstance(f, gtsam.BetweenFactorPose3):

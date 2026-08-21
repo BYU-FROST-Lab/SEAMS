@@ -12,6 +12,7 @@ from pathlib import Path
 import open3d as o3d
 from scipy.spatial import KDTree
 import pickle
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 # Local imports
@@ -49,6 +50,18 @@ def odom_to_robot_frame(last_odom_pose: gtsam.Pose3, last_robot_pose: gtsam.Pose
     T_odom_to_robot = last_robot_pose.between(last_odom_pose)
     return T_odom_to_robot
 
+def update_session_worker(i, cs, deskewed_points, relPose_tmp, timestamp):
+    try:
+        result = cs.Update(
+            deskewed_points,
+            relPose=copy.deepcopy(relPose_tmp),
+            timestamp=copy.copy(timestamp),
+        )
+        return i, result, None
+
+    except Exception as e:
+        return i, None, e
+
 
 def run_session(params: Params = Params(), 
                 enable_matplotlib: bool = ENABLE_MATPLOTLIB, 
@@ -75,13 +88,19 @@ def run_session(params: Params = Params(),
     if evaluate_decision_types:
         currentSession = []
         still_valid = [True] * len(DecisionType)
+        if params.loadSessionDir is not None:
+            shared_pcds = fgtools.loadSymbolPCDs(params.loadSessionDir / "scans")
+        else:
+            shared_pcds = None
         for dt in DecisionType:
             tmpParams = copy.deepcopy(params)
             tmpParams.policyType = dt
             if tmpParams.loadSessionDir is not None:
                 if Path(tmpParams.loadSessionDir / dt.name).exists():
                     tmpParams.loadSessionDir = tmpParams.loadSessionDir / dt.name
-            currentSession.append(SessionManager(tmpParams.loadSessionDir, tmpParams))
+            session = SessionManager(params=tmpParams)
+            session.LoadSession(sharedScans=shared_pcds)
+            currentSession.append(session)
     else:
         if params.loadSessionDir is not None:
             if Path(params.loadSessionDir / params.policyType.name).exists():
@@ -168,14 +187,46 @@ def run_session(params: Params = Params(),
             # relPose_tmp = T_odom_to_robot.compose(relPose_tmp)
             # poses.append(relPose_tmp)
             update_time = time.time()
+            results = [SessionManager.UpdateResult()] * len(currentSession)
             for i, cs in enumerate(currentSession):
                 if not still_valid[i]:
                     continue
                 try:
-                    sessionResult = cs.Update(deskewed_points, relPose=relPose_tmp, timestamp=timestamp)
+                    results[i] = cs.Update(deskewed_points, relPose=copy.deepcopy(relPose_tmp), timestamp=copy.copy(timestamp))
                 except Exception as e:
                     print(f"Error updating session {cs.params.policyType.name}: {e}")
                     still_valid[i] = False
+
+
+            # sessionResults = [None] * len(currentSession)
+
+            # with ThreadPoolExecutor(max_workers=len(currentSession)) as executor:
+
+            #     futures = [
+            #         executor.submit(
+            #             update_session_worker,
+            #             i,
+            #             cs,
+            #             deskewed_points,
+            #             relPose_tmp,
+            #             timestamp,
+            #         )
+            #         for i, cs in enumerate(currentSession)
+            #         if still_valid[i]
+            #     ]
+
+            #     for future in as_completed(futures):
+            #         i, result, error = future.result()
+
+            #         if error is not None:
+            #             print(
+            #                 f"Error updating session "
+            #                 f"{currentSession[i].params.policyType.name}: {error}"
+            #             )
+            #             still_valid[i] = False
+            #         else:
+            #             sessionResults[i] = result
+
             update_time = time.time() - update_time
             lastPose_odom = composedPose_odom
             # print(f"Frame {totalCnt}: relative pose computed")
@@ -297,6 +348,10 @@ def run_session(params: Params = Params(),
         totalCnt += 1
         prevISAM2 = currentSession[0].isam2
 
+        if not any(still_valid):
+            print("\n")
+            raise RuntimeError("All policies failed. Check output")
+
     end_time = time.time()
     bag_time = timestamp - firstTimestamp
     run_time = end_time - start_time
@@ -324,13 +379,17 @@ def run_session(params: Params = Params(),
 
         if SAVE_FULL_SESSION:
             cs.SaveSession(params.saveSessionDir)
+            if params.loadSessionDir:
+                directory = params.saveSessionDir / cs.params.policyType.name
+            else:
+                directory = Path(params.saveSessionDir)
             # Save matplotlib figure
-            plt.savefig(params.saveSessionDir / cs.params.policyType.name / "final_graph.png", dpi=300, bbox_inches='tight')
+            plt.savefig(directory / "final_graph.png", dpi=300, bbox_inches='tight')
 
             # Save figure with covariances
             try:
                 fgtools.plot_graph_covariances(final_values.keys(), cs.smoother_, final_values, ax=ax, changeColorBySymbols=True, symbolColors=sessionSymbols)
-                plt.savefig(params.saveSessionDir / cs.params.policyType.name / "final_graph_with_covariances.png", dpi=300, bbox_inches='tight')
+                plt.savefig(directory / "final_graph_with_covariances.png", dpi=300, bbox_inches='tight')
             except Exception as e:
                 print(f"Error occurred while plotting covariances: {e}")
             ax.clear()
@@ -339,21 +398,21 @@ def run_session(params: Params = Params(),
             fgtools.plot_graph(final_graph, final_values, ax=ax, title=plotTitle, addKeyLabels=False, changeColorBySymbols=True, symbolColors=sessionSymbols)
             if gt is not None:
                 ax.plot(gt.array[:,1], gt.array[:,2], color='tab:green', label='Ground Truth', alpha=0.5)
-                plt.savefig(params.saveSessionDir / cs.params.policyType.name / "final_graph_with_ground_truth.png", dpi=300, bbox_inches='tight')
+                plt.savefig(directory / "final_graph_with_ground_truth.png", dpi=300, bbox_inches='tight')
         else:
-            Path.mkdir(params.saveSessionDir / cs.params.policyType.name, exist_ok=True)
+            Path.mkdir(directory, exist_ok=True)
 
     if SAME_SESSION_COV_CHANGE_PLOT:
         # Save dictionary for plotting elsewhere
-        with open(params.saveSessionDir / cs.params.policyType.name / "det_of_addToPriorNodes.pkl", "wb") as f:
+        with open(params.saveSessionDir / "det_of_addToPriorNodes.pkl", "wb") as f:
             pickle.dump(sscp_dets, f)   
 
     if SAVE_COVARIANCE_OF_CURRENT_POSE:
-        with open(params.saveSessionDir / cs.params.policyType.name / "cov_of_currentPoses.pkl", "wb") as f:
+        with open(params.saveSessionDir / "cov_of_currentPoses.pkl", "wb") as f:
             pickle.dump(cov_current_pose_arr, f)
 
     if SAVE_UPDATE_TIMING:
-        with open(params.saveSessionDir / cs.params.policyType.name / "update_timing.pkl", "wb") as f:
+        with open(params.saveSessionDir / "update_timing.pkl", "wb") as f:
                     pickle.dump(updateTimes, f)
 
     print("Done with session")
@@ -411,15 +470,16 @@ if __name__ == "__main__":
     # args.save_session_dir = moduleDir / "results/nc/quad-medium_cov_current_pose_eval"
 
     args.dataset = "urban"
-    args.mission = "block2"
+    args.mission = "block1"
     # args.load_session_dir = None
-    # args.load_session_dir = moduleDir / "results/urban/block0/"
-    # args.save_session_dir = moduleDir / "results/urban/block0/"
+    args.load_session_dir = moduleDir / "results/urban/block0/"
+    args.save_session_dir = moduleDir / "results/test/"
     # args.load_session_dir = moduleDir / "results/test/urban/block1_prior_block0/"
     # args.evaluate_decision_types = True
-    args.policy = "FITNESS"
-    args.load_session_dir = moduleDir / "policy_evaluation/urban/block1_prior_block0/"
-    # args.save_session_dir = moduleDir / "policy_evaluation/urban/block2_block1_prior_block0"
+    args.policy = "TWO_STEP_VALIDATION"
+    # args.load_session_dir = moduleDir / "policy_evaluation/urban2/block1_prior_block0/"
+    # args.load_session_dir = moduleDir / "policy_evaluation/urban2/block0"
+    # args.viz = "none"
 
     # args.dataset = "nclt"
     # args.mission = "3"
