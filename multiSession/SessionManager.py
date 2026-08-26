@@ -89,6 +89,7 @@ class SessionManager:
 
         self.sessionKeys: dict[str, list[int]] = {}
         self.lastOdomKey_ = 0
+        # self.localWindowSubmap: tuple[o3d.geometry.PointCloud, int] = (o3d.geometry.PointCloud(), -1)
 
         self.initializationCount_ = 0
 
@@ -307,8 +308,7 @@ class SessionManager:
         previousState = copy(self.decisionState_)
         if self.interLoopTree_ is None:
             return False
-        start = time.time()
-        self.metrics_.CalculateMetrics(
+        metricTime = self.metrics_.CalculateMetrics(
             self.smoother_.getISAM2(), 
             self.currentEstimate_, 
             self.interLoopTree_, 
@@ -319,8 +319,10 @@ class SessionManager:
             self.sessionKeys[self.currentSessionSymbol_] if self.currentSessionSymbol_ in self.sessionKeys else [],
             self.overlapData_,
             )
+        startTime = time.time()
         self.decisionState_ = self.decider.DetermineDecisionState(self.metrics_)
-        self.timeToCalcMetricsAndDecision_.append(time.time() - start)
+        decisionTime = time.time() - startTime
+        self.timeToCalcMetricsAndDecision_.append(metricTime + decisionTime)
 
         if self.decisionState_ == NodeDecision.INITIALIZE:
             print(f"DecisionState - {self.params.policyType.name}: Waiting for policy initialization...")
@@ -556,19 +558,14 @@ class SessionManager:
 
 
     
-    def AddOdomFactor(self, pose: gtsam.Pose3|None=None, relPose:gtsam.Pose3|None=None, symbolChr:str='') -> int:
-        # if symbolChr == '':
-        #     if self.decisionState_ == NodeDecision.LOCALIZE:
-        #         symbolChr = self.currentSessionSymbol_
-        #     else:
-        #         symbolChr = self.addToPriorSymbol_
+    def AddOdomFactor(self, pose: gtsam.Pose3|None=None, 
+                            relPose:gtsam.Pose3|None=None, 
+                            newPointCloud:o3d.geometry.PointCloud=o3d.geometry.PointCloud()
+                            ) -> int:
         if self.currentEstimate_.empty():
             raise RuntimeError(f"Values is empty. Must add a prior value before adding odometry factor")
         
-        # if self.params.fixedLagCurrentSession:
         decisionStateChanged = self.UpdateDecisionState()
-        # else:
-        #     decisionStateChanged = False
         
         if pose is None and relPose is None:
             raise ValueError("AddOdomFactor: Either pose or relPose must be provided")
@@ -584,29 +581,17 @@ class SessionManager:
         if self.decisionState_ != NodeDecision.MAP:
             newKey = gtsam.Symbol(self.currentSessionSymbol_, int(self.currTimestamp_)).key()
 
-            # if self.IsCurrentSessionKey(self.lastOdomKey_):
-            #     newKey = self.lastOdomKey_ + 1
-            # else:
-            #     newKey = gtsam.Symbol(self.currentSessionSymbol_, 0).key()
-            #     if self.currentSessionSymbol_ in self.sessionKeys:
-            #         if len(self.sessionKeys[self.currentSessionSymbol_]) > 0:
-            #             newKey = self.sessionKeys[self.currentSessionSymbol_][-1] + 1
         # If mapping, the key will be the new session key being added to the prior
         else:
             newKey = gtsam.Symbol(self.addToPriorSymbol_, int(self.currTimestamp_)).key()
-            # if self.IsAddToPriorSessionKey(self.lastOdomKey_):
-            #     newKey = self.lastOdomKey_ + 1
-            # else:
-            #     if self.addToPriorSymbol_ in self.sessionKeys:
-            #         newKey = self.sessionKeys[self.addToPriorSymbol_][-1] + 1
-            #     else:
-            #         newKey = gtsam.Symbol(self.addToPriorSymbol_, 0).key()
+        
+        noise = self.CalcOdomNoise(newPointCloud, pose)
                 
         factor = gtsam.BetweenFactorPose3(
             self.lastOdomKey_,
             newKey,
             relPose,
-            self.odomNoise_
+            noise
         )
 
         self.AddFactor(factor, newKey, pose)
@@ -654,6 +639,23 @@ class SessionManager:
         self.lastOdomKey_ = newKey
 
         return newKey
+
+    def CalcOdomNoise(self, newPointCloud:o3d.geometry.PointCloud, newPose:gtsam.Pose3) -> gtsam.noiseModel.Diagonal:
+        if not newPointCloud.has_points():
+            print("WARNING: New odom point cloud has no points. Returning default noise model.")
+            return self.odomNoise_
+        currentScan = o3d.geometry.PointCloud(newPointCloud)
+        localSubmap = self.FindRecentKeyFrames(5)
+
+        result = fgtools.ScanMatch(currentScan, localSubmap, newPose.matrix(),showResult=0, voxel_size=self.params.icp.voxelSize)
+        # print(f"OdomNoise: fitness - {result.fitness}; inlier_rmse - {result.inlier_rmse}")
+        if np.isclose(result.fitness, 1.0):
+            raise ValueError("CalcOdomNoise: scan match fitness is 1.0. Very high likelihood that there's a bug.")
+        # error = fgtools.GetMeanErrorFromScanMatchResult(currentScan, localSubmap, result)
+        error = result.inlier_rmse
+        iNoise = max((1 - result.fitness) * error, 1e-3)
+        # print(f"Odom Noise: {iNoise}")
+        return gtsam.noiseModel.Isotropic.Sigma(6, iNoise)
     
     def AddPointCloud(self, key: int, pointCloud: o3d.geometry.PointCloud|np.ndarray, timestamp: float) -> bool:
         if key in self.pcds_.keys():
@@ -676,9 +678,13 @@ class SessionManager:
         if self.timestamps_.keys() != self.pcds_.keys():
             print(f"Warning: Timestamps keys do not match point cloud keys.")
     
-    def UpdatePriorTree(self):
+    def UpdatePriorTree(self, calcRecentKeysToIgnore:bool=True):
 
-        self.loopKeysToIgnore_ |= set(self.recentKeysQueue_)
+        # self.loopKeysToIgnore_ |= set(self.recentKeysQueue_)
+        if calcRecentKeysToIgnore:
+            potentialKeysToIgnore = set(self.sessionKeys[self.addToPriorSymbol_]) if self.addToPriorSymbol_ in self.sessionKeys else set()
+            keysAlreadyInPrior = set(self.interLoopTree_.keys) if self.interLoopTree_ else set()
+            self.loopKeysToIgnore_ |= potentialKeysToIgnore - keysAlreadyInPrior
         points, keys = fgtools.GetPointsFromGraphEstimate(self.currentEstimate_, 
                                                           symbolChr=self.currentSessionSymbol_, 
                                                           allOthers=True, 
@@ -739,14 +745,21 @@ class SessionManager:
         if inter and self.interLoopTree_:
             
             if len(self.loopKeysToIgnore_):
-                # tmpPoints, tmpKeys = fgtools.GetPointsFromGraphEstimate(self.priorValues_, keys=list(self.loopKeysToIgnore_))
-                # tmpTree = KDTree(tmpPoints)
-                # tmpIndices = tmpTree.query_ball_point(currPose.translation(), r=self.params.loopClosure.distMax)
+                tmpPoints, tmpKeys = fgtools.GetPointsFromGraphEstimate(self.currentEstimate_, keys=list(self.loopKeysToIgnore_))
+                tmpTree = KDTree(tmpPoints)
+                tmpIndices = tmpTree.query_ball_point(currPose.translation(), r=self.params.loopClosure.distMax)
                 size = len(self.loopKeysToIgnore_)
-                # self.loopKeysToIgnore_ &= set(np.asarray(tmpKeys)[tmpIndices])
-                self.loopKeysToIgnore_ &= set(self.recentKeysQueue_)
+                self.loopKeysToIgnore_ &= set(np.asarray(tmpKeys)[tmpIndices])
+                # self.loopKeysToIgnore_ &= set(self.recentKeysQueue_)
+
+                # If closest prior point is closer than ignored keys, add ignored keys
+                closestIgnored, _ = tmpTree.query(currPose.translation())
+                closestPrior, _ = self.interLoopTree_.tree.query(currPose.translation())
+                if closestPrior < closestIgnored:
+                    self.loopKeysToIgnore_ = set()
                 if len(self.loopKeysToIgnore_) != size:
-                    self.UpdatePriorTree()
+                    self.UpdatePriorTree(calcRecentKeysToIgnore=False)
+
             distances, indices = self.interLoopTree_.tree.query(currPose.translation(), k=self.params.loopClosure.maxPossibleConnections, distance_upper_bound=self.params.loopClosure.distMax) # Look for the 5 closest poses given the distance is less than 30
             # distances, indices = self.interLoopTree_.tree.query(pose.translation()) # Look for the 5 closest poses given the distance is less than 30
             keys = deepcopy(self.interLoopTree_.keys)
@@ -756,17 +769,17 @@ class SessionManager:
             reg = None
             numInterLoops = 0
 
-            pcSource = self.FindRecentKeyFrames(self.params.loopClosure.interNearKeyFramesCurrent)
+            pcSource = self.FindRecentKeyFrames(0)
             self.overlapData_.currScan = o3d.geometry.PointCloud(pcSource)
             self.overlapData_.currCenterPoint = self.currentEstimate_.atPose3(self.lastOdomKey_).translation()[:2]
 
-            for k in keysToSearch:
+            for i, k in enumerate(keysToSearch):
                 # ret = self.LoopCheckGivenKey(k, addFactor=True, numNearKeyFrames=self.params.icp.nearKeyFrames)
                 foundInterLoop, ret = self.LoopCheckGivenKey(k, 
                                                              addFactor=True, 
                                                              numNearSourceKeyFrames=self.params.loopClosure.interNearKeyFramesCurrent, 
                                                              numNearTargetKeyFrames=self.params.loopClosure.interNearKeyFramesCurrent,
-                                                             setSubmap=True if reg is None else False
+                                                             setSubmap=True if i == 0 else False
                                                              )
                 if reg is None:
                     reg = ret
@@ -818,7 +831,7 @@ class SessionManager:
         if self.currTimestamp_ % (self.params.loopClosure.showResultSkipFrames + 1) == 0:
             showResult = self.params.loopClosure.showScanMatchResult
 
-        reg = fgtools.ScanMatch(pcSource, pcTarget, np.eye(4), showResult=showResult, voxel_size=self.params.icp.voxelSize)
+        reg = fgtools.ScanMatch(pcSource, pcTarget, np.eye(4), showResult=showResult, voxel_size=self.params.loopClosure.voxelSize)
 
         fit = reg.fitness
         transFinal = reg.transformation
@@ -831,7 +844,13 @@ class SessionManager:
             ts = gtsam.Symbol(key)
             if self.params.loopClosure.debug:
                 print(f"Loop Found between keys {chr(cs.chr()) if cs.chr() else ''}{cs.index()} and {chr(ts.chr()) if ts.chr() else ''}{ts.index()}")
-            loopNoise = gtsam.noiseModel.Diagonal.Variances(np.asarray([max(1-fit, 1e-2) * self.params.loopClosure.noiseScale] * 6))
+            # loopNoise = gtsam.noiseModel.Diagonal.Variances(np.asarray([max(1-fit, 1e-2) * self.params.loopClosure.noiseScale] * 6))
+
+            # error = fgtools.GetMeanErrorFromScanMatchResult(pcSource, pcTarget, reg)
+            error = reg.inlier_rmse
+            noiseValue = max((1-fit)*error, 1e-3)
+            loopNoise = gtsam.noiseModel.Isotropic.Sigma(6, noiseValue)
+            # print(f"Loop Noise: {noiseValue}")
 
             Twrong = self.currentEstimate_.atPose3(currKey).matrix()
 
@@ -1204,7 +1223,7 @@ class SessionManager:
                 self.AddPrior(key, pose, gtsam.noiseModel.Diagonal.Sigmas(np.array([1e-2]*6)))
             self.AddPointCloud(key, pointCloud, timestamp=timestamp)
         else:
-            key = self.AddOdomFactor(pose, relPose)
+            key = self.AddOdomFactor(pose, relPose, pointCloud)
             self.AddPointCloud(key, pointCloud, timestamp=timestamp)
 
         result.key = key

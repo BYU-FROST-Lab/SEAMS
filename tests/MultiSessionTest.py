@@ -126,7 +126,8 @@ def run_session(params: Params = Params(),
     sessionSymbols = {ord('c'): 'C0'}#,ord('A'): 'C1', ord('B'): 'C2', ord('C'): 'C3'}
 
     if show_mpl:
-        _, ax = plt.subplots()
+        # fig, ax = plt.subplots()
+        fig, ax = plt.subplots(figsize=(10, 8))
 
     viz = None
     if show_o3d:
@@ -161,6 +162,7 @@ def run_session(params: Params = Params(),
             print(f"Initial pose is: \n{gtPose}")
             kissOdom.set_initial_pose(gtPose)
         composedPose_odom, relPose_odom, deskewed_points = kissOdom.process_next_keyframe(xyz_points) # Poses are returned in the odometry frame, not the robot's frame
+        pointCloud = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(deskewed_points))
 
         if firstPass:
             assert relPose_odom is None, "Relative pose should be None for the first keyframe"
@@ -169,11 +171,11 @@ def run_session(params: Params = Params(),
                 # gtPose = gt.get_closest_gt(timestamp)
                 # print(f"Initial pose is: \n{gtPose}")
                 for cs in currentSession:
-                    sessionResult = cs.Update(deskewed_points, gtPose, timestamp=timestamp)
+                    sessionResult = cs.Update(pointCloud, gtPose, timestamp=timestamp)
                 # poses.append(gtPose)
             else:
                 for cs in currentSession:
-                    sessionResult = cs.Update(deskewed_points, composedPose_odom, timestamp=timestamp)
+                    sessionResult = cs.Update(pointCloud, composedPose_odom, timestamp=timestamp)
                 # poses.append(composedPose_odom)
             update_time = time.time() - update_time
             firstPass = False
@@ -191,11 +193,11 @@ def run_session(params: Params = Params(),
             for i, cs in enumerate(currentSession):
                 if not still_valid[i]:
                     continue
-                try:
-                    results[i] = cs.Update(deskewed_points, relPose=copy.deepcopy(relPose_tmp), timestamp=copy.copy(timestamp))
-                except Exception as e:
-                    print(f"Error updating session {cs.params.policyType.name}: {e}")
-                    still_valid[i] = False
+                # try:
+                results[i] = cs.Update(pointCloud, relPose=copy.deepcopy(relPose_tmp), timestamp=copy.copy(timestamp))
+                # except Exception as e:
+                #     print(f"Error updating session {cs.params.policyType.name}: {e}")
+                #     still_valid[i] = False
 
 
             # sessionResults = [None] * len(currentSession)
@@ -323,6 +325,8 @@ def run_session(params: Params = Params(),
                     ax.plot(gt.array[:,1], gt.array[:,2], color='tab:green', label='Ground Truth', alpha=0.5)
                     # ax.plot(gt2.array[:,1], gt2.array[:,2], color='tab:orange', label='Ground Truth Block0', alpha=0.5)
                 fgtools.plot_graph(currentSession[0].graph, tmpValues, ax=ax, title=plotTitle, changeColorBySymbols=True, addKeyLabels=False, symbolColors=sessionSymbols)
+                if currentSession[0].interLoopTree_ is not None:
+                    fgtools.plot_points(currentSession[0].interLoopTree_.keys, currentSession[0].currentEstimate_, "tab:red", ax=ax)
                 # fgtools.plot_graph_covariances(tmpValues.keys(), currentSession.fixedLagSmoother, tmpValues, ax=ax, changeColorBySymbols=True, symbolColors=sessionSymbols)
                 # odom_values = gtsam.Values()
                 # for i, pose in enumerate(kissOdom.poses):
@@ -336,8 +340,9 @@ def run_session(params: Params = Params(),
                     offset = 5
                     ax.set_xlim(min(p1.x(), p2.x())-offset, max(p1.x(), p2.x())+offset)
                     ax.set_ylim(min(p1.y(), p2.y())-offset, max(p1.y(), p2.y())+offset)
+#########
                 plt.pause(0.05)
-
+#########
             if show_o3d and not viz.update():
                 print("Open3D window closed — disabling live 3D visualization.")
                 viz.close()
@@ -364,7 +369,7 @@ def run_session(params: Params = Params(),
         viz.close()
 
     if show_mpl:
-        plt.close('all')
+        plt.close(fig)
 
     for i, cs in enumerate(currentSession):
         if not still_valid[i]:
@@ -464,19 +469,26 @@ if __name__ == "__main__":
     # Hardcode values for testing purposes #
     ########################################
 
-    # args.dataset = "nc"
-    # args.mission = "quad-medium"
-    # # args.load_session_dir = moduleDir / "results/nc/quad-easy/"
-    # args.save_session_dir = moduleDir / "results/nc/quad-medium_cov_current_pose_eval"
-
-    args.dataset = "urban"
-    args.mission = "block1"
-    # args.load_session_dir = None
-    args.load_session_dir = moduleDir / "results/urban/block0/"
-    args.save_session_dir = moduleDir / "results/test/"
-    # args.load_session_dir = moduleDir / "results/test/urban/block1_prior_block0/"
     # args.evaluate_decision_types = True
-    args.policy = "TWO_STEP_VALIDATION"
+    # args.policy = "NONE"
+    # args.policy = "DISTANCE"
+    # args.policy = "OVERLAP"
+    args.policy = "FITNESS"
+    # args.policy = "INLIER_RMSE"
+    # args.policy = "TWO_STEP_VALIDATION"
+    # args.policy = "RELATIVE_COVARIANCE"
+
+    args.dataset = "nc"
+    args.mission = "quad-hard"
+    args.load_session_dir = moduleDir / "results/nc/quad-easy/"
+    # args.save_session_dir = moduleDir / "results/nc/quad-easy"
+
+    # args.dataset = "urban"
+    # args.mission = "block1"
+    # args.load_session_dir = None
+    # args.load_session_dir = moduleDir / "results/newOdom/urban/block0/"
+    # args.save_session_dir = moduleDir / "results/newOdom/urban/block0"
+    # args.load_session_dir = moduleDir / "results/test/urban/block1_prior_block0/"
     # args.load_session_dir = moduleDir / "policy_evaluation/urban2/block1_prior_block0/"
     # args.load_session_dir = moduleDir / "policy_evaluation/urban2/block0"
     # args.viz = "none"

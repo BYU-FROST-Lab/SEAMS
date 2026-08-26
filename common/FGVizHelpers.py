@@ -224,7 +224,7 @@ def plot_graph(graph: gtsam.gtsam.NonlinearFactorGraph,
     return ax
 
 def plot_points(
-        keys, 
+        keys: list[int], 
         values: gtsam.gtsam.Values, 
         color="tab:blue", 
         alpha=1., 
@@ -1364,7 +1364,7 @@ def ScanMatch(
         trans_init: np.ndarray = np.eye(4), 
         threshold: float = 0.02, 
         showResult: int = 0,
-        voxel_size: float | None = 0.5,
+        voxel_size: float | None = 0.1,
         ) -> o3d.pipelines.registration.RegistrationResult:
     '''
     Inputs:
@@ -1378,7 +1378,7 @@ def ScanMatch(
     target = copy.deepcopy(target)
 
     if voxel_size is not None:
-        source = source.voxel_down_sample(voxel_size)
+        # source = source.voxel_down_sample(voxel_size)
         target = target.voxel_down_sample(voxel_size)
     
     if showResult == 1 or showResult == 3:
@@ -1405,6 +1405,35 @@ def ScanMatch(
         draw_registration_result(source, target, trans_final, title="Final Transform")
     
     return reg
+
+def GetMeanErrorFromScanMatchResult(source, target, reg_result):
+    # 1. Transform the source cloud using the final GICP matrix
+    source_transformed = source.transform(reg_result.transformation)
+
+    # 2. Extract point coordinates as NumPy arrays
+    source_pts = np.asarray(source_transformed.points)
+    target_pts = np.asarray(target.points)
+
+    # 3. Get the paired inlier indices from the GICP correspondence set
+    # Shape is (N, 2) -> columns are [source_index, target_index]
+    correspondences = np.asarray(reg_result.correspondence_set)
+
+    if len(correspondences) > 0:
+        # 4. Filter out matched point pairs
+        matched_src = source_pts[correspondences[:, 0]]
+        matched_tgt = target_pts[correspondences[:, 1]]
+        
+        # 5. Calculate Euclidean distances for each matched pair
+        distances = np.linalg.norm(matched_src - matched_tgt, axis=1)
+        
+        # 6. Compute the true Mean Error
+        mean_error = np.mean(distances)
+        print(f"Mean Absolute Error: {mean_error} meters")
+    else:
+        print("No inlier correspondences found.")
+        mean_error = np.inf
+
+    return mean_error
 
 def ListToGtsamKeyList(listToConvert:list) -> gtsam.KeyList:
     keyList = gtsam.KeyList()

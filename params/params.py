@@ -5,19 +5,20 @@ from pathlib import Path
 # ICP params
 @dataclass
 class ICP:
-    voxelSize: float | None = 0.3   # Either > 0.0 or None. If None, no downsampling is performed.
+    voxelSize: float | None = 0.1   # Either > 0.0 or None. If None, no downsampling is performed.
 
 # Loop Closure params
 @dataclass
 class LoopClosure:
     noiseScale: float = 1
     prevFrameSkip: int = 50
-    distMax: int = 50
+    distMax: int = 20
     skipFrames: int = 0
     intraNearKeyFrames: int = 5     # Same session
     interNearKeyFramesPrior: int = 5     # >=0 Between session. Number of key frames on each side of the current pose to use for registration to the prior session.
     interNearKeyFramesCurrent: int = 0     # >=0 Between session. Number of key frames to use in current window in addition to the current pose for registration to the prior session.
-    maxPossibleConnections: int = 5
+    voxelSize: float | None = 0.4
+    maxPossibleConnections: int = 1
     fitnessThreshold: float = 0.5
     showScanMatchResult: int = 0    # 0 = no visualization, 1 = visualize initial alignment, 2 = visualize final alignment, 3 = visualize both
     showResultSkipFrames: int = 0   # 0 = visualize every frame, 1 = visualize every other frame, 2 = visualize every third frame, etc.
@@ -26,7 +27,7 @@ class LoopClosure:
 # Geometry policy
 @dataclass
 class DistancePolicy:
-    minDistance: float | int = 20
+    minDistance: float | int = 10
 
 # Overlap policy
 @dataclass
@@ -51,6 +52,9 @@ class InlierRMSEPolicy:
 @dataclass
 class TwoStepConnectivityPolicy:
     movingAverageLength: int = 10
+    # Floor on sigma as a fraction of mu so a perfectly stable d-bar does not
+    # treat every numerical wiggle as a 2/4-sigma drop (arXiv:2602.17226 §III-B2).
+    minRelativeSigma: float = 0.01
     showDLplot: bool = True
     debug: bool = True
 

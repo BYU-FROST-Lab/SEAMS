@@ -62,29 +62,38 @@ class WeightedPoseGraph:
             self.nx_graph.add_node(k, pose=p, theta=pose3.rotation().yaw()) # TODO: Make this 6D
         for i in range(gtsamGraph.size()):
             f = gtsamGraph.at(i)
-            if isinstance(f, gtsam.BetweenFactorPose3):
-                keys = f.keys()
-                edge = (keys[0], keys[1])
+            if not (isinstance(f, gtsam.BetweenFactorPose3) or isinstance(f, gtsam.LinearContainerFactor)):
+                continue
+            keys = f.keys()
+            edge = (keys[0], keys[1])
 
-                info = f.noiseModel().information()
-                A = np.array([[info[3, 3], info[3, 4], info[2, 3]], # Pull out the x, y, yaw components from the gtsam noise models
-                              [info[4, 3], info[4, 4], info[2, 4]],
-                              [info[3, 2], info[4, 2], info[2, 2]]])
-                opt_cri_d = 0
-                opt_cri_t = 0
-                opt_cri_e = 0
-                if 'd_opt' in criteria:
-                    eigv2 = np.linalg.eigvalsh(info)
-                    eigv = eigv2[eigv2 > 1e-8]
-                    n = np.size(A, 1)
-                    opt_cri_d = np.exp(np.sum(np.log(eigv)) / n)
-                if 't_opt' in criteria:
-                    opt_cri_t = np.trace(info) / info.shape[0]
-                if 'e_opt' in criteria:
-                    opt_cri_e = min(np.linalg.eigvalsh(info))
-                    
-                etype = 0 if (abs(keys[0] - keys[1]) == 1) else 1 # 0 for odometry, 1 for loop closure
-                self.nx_graph.add_edge(*edge, type=etype, information=A.flatten(), weight_d=opt_cri_d, weight_t=opt_cri_t, weight_e=opt_cri_e)
+            # Paper 2602.17226 §III-B1 / Placed & Castellanos 2022: weight each
+            # pose-graph edge by a scalar of the Fisher information it encodes.
+            # T-opt uses the trace; E-opt uses the minimum eigenvalue.
+            if isinstance(f, gtsam.LinearContainerFactor):
+                info = f.toHessian().information()
+            else:
+                info = np.asarray(f.noiseModel().information(), dtype=float)
+            eigv = np.linalg.eigvalsh(info)
+            opt_cri_d = 0.0
+            opt_cri_t = 0.0
+            opt_cri_e = 0.0
+            if 'd_opt' in criteria:
+                eigv_pos = eigv[eigv > 1e-8]
+                n = info.shape[0]
+                opt_cri_d = float(np.exp(np.sum(np.log(eigv_pos)) / n)) if eigv_pos.size else 0.0
+            if 't_opt' in criteria:
+                opt_cri_t = float(np.trace(info))
+                # opt_cri_t = 1.0
+            if 'e_opt' in criteria:
+                opt_cri_e = float(max(eigv[0], 0.0))
+
+            idx0 = gtsam.Symbol(keys[0]).index()
+            idx1 = gtsam.Symbol(keys[1]).index()
+            same_chr = gtsam.Symbol(keys[0]).chr() == gtsam.Symbol(keys[1]).chr()
+            etype = 0 if (same_chr and abs(idx0 - idx1) == 1) else 1
+            self.nx_graph.add_edge(*edge, type=etype, information=info.flatten(),
+                                    weight_d=opt_cri_d, weight_t=opt_cri_t, weight_e=opt_cri_e)
 
     def addEdge(self, id1, id2, t, I):
         A = [[I[0], I[1], I[2]],
@@ -112,6 +121,14 @@ class WeightedPoseGraph:
     # Compute the Laplacian matrix of the graph, Laplacian = Degree - Adjacency
     def compute_L(self, weight='weight_d'):
         return nx.laplacian_matrix(self.nx_graph, weight=weight).toarray()
+
+    def compute_average_degree(self, weight='weight_d') -> float:
+        """Average weighted node degree: tr(L)/m = (1/m) sum_{k=2}^{m} λ_k."""
+        n = self.nx_graph.number_of_nodes()
+        if n == 0:
+            return 0.0
+        # return float(sum(dict(self.nx_graph.degree(weight=weight)).values()) / n)
+        return float(np.trace(self.compute_L(weight)) / n)
 
     # Computes the anchored Laplacian matrix along a random node
     def compute_anchored_L(self, weight='weight_d'):
@@ -152,8 +169,11 @@ class WeightedPoseGraph:
     
     # Compute the second eigenvalue (Fiedler value) of the Laplacian
     def compute_fiedler_value(self, weight='weight_d'):
+        n = self.nx_graph.number_of_nodes()
+        if n < 2:
+            return 0.0
         eigen_v = nx.laplacian_spectrum(self.nx_graph, weight=weight)
-        return eigen_v[1]
+        return float(eigen_v[1])
 
     # Computes the Fiedler vector of the graph
     def compute_fiedler_vector(self, weight='weight_d'):

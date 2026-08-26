@@ -2,7 +2,6 @@ from policy.base import NodeDecisionPolicy
 from metrics import Metrics
 import numpy as np
 from params import Params
-from common.weighted_pose_graph_class import WeightedPoseGraph
 from common.customTypes import NodeDecision
 
 import matplotlib.pyplot as plt
@@ -10,6 +9,19 @@ from matplotlib.axes import Axes
 
 
 class TwoStepConnectivityPolicy(NodeDecisionPolicy):
+    """Map/localize switching from Montano-Oliván et al., arXiv:2602.17226 §III-B2.
+
+    1. Track the T-weighted average degree d-bar against its moving average (mu, sigma).
+    2. If d-bar drops more than 2 sigma, evaluate the E-weighted Fiedler value lambda_2.
+       - lambda_2 == 0: graphs are disconnected -> MAP
+       - lambda_2 > 0 but d-bar dropped more than 4 sigma: weakly connected -> MAP
+    3. While mapping, switch back to LOCALIZE only when d-bar is back within 2 sigma
+       of the (frozen) localization baseline AND lambda_2 > 0.
+    """
+
+    # Algebraic connectivity is identically 0 iff the graph is disconnected.
+    LAMBDA2_EPS = 1e-8
+
     def __init__(self, params: Params):
         super().__init__(params)
         self.d_bar_hist = []
@@ -17,58 +29,79 @@ class TwoStepConnectivityPolicy(NodeDecisionPolicy):
         self.debug = params.twoStepConnectivityPolicy.debug
         if params.twoStepConnectivityPolicy.showDLplot:
             _, self.ax = plt.subplots()
-        
+
         self.previousState_ = NodeDecision.INITIALIZE
 
     def DetermineDecisionState(self, metrics: Metrics) -> NodeDecision:
         if not hasattr(metrics, "wpg"):
             raise AttributeError("TwoStepConnectivityPolicy: metrics doesn't have the needed WeightedPoseGraph object")
-        
-        L_t = metrics.wpg.compute_L(weight='weight_t')
-        d_bar = np.trace(L_t) / L_t.shape[0]
 
-        if self.previousState_ == NodeDecision.MAP and metrics.currentState != NodeDecision.MAP:
-            self.d_bar_hist.clear()
-        self.previousState_ = metrics.currentState
+        d_bar = metrics.d_bar
+        current_state = metrics.currentState
+        cfg = self.params.twoStepConnectivityPolicy
+        window = cfg.movingAverageLength
 
-        if len(self.d_bar_hist) < (self.params.twoStepConnectivityPolicy.movingAverageLength // 2):
-        # if len(self.d_bar_hist) < 2:
-            self.d_bar_hist.append(d_bar)
+        # Build the localization baseline before making any MAP/LOCALIZE decision.
+        # Samples collected while mapping would pull mu down and collapse the test.
+        if len(self.d_bar_hist) < window:
+            if current_state != NodeDecision.MAP:
+                self.d_bar_hist.append(d_bar)
             return NodeDecision.INITIALIZE
-        
-        mu = np.mean(self.d_bar_hist)
-        sigma = np.std(self.d_bar_hist)
-        lambda2 = metrics.wpg.compute_fiedler_value(weight='weight_e')
+
+        mu = float(np.mean(self.d_bar_hist))
+        sigma = float(np.std(self.d_bar_hist, ddof=1)) if len(self.d_bar_hist) > 1 else 0.0
+        # sigma = max(sigma, abs(mu) * cfg.minRelativeSigma, 1e-12)
+        sigma = max(sigma, cfg.minRelativeSigma, 1e-12)
+        lower_2 = mu - 2.0 * sigma
+        lower_4 = mu - 4.0 * sigma
+
+        # lambda_2 is the expensive step; the paper only computes it after the 2-sigma
+        # gate, or while mapping so the recovery test can run.
+        need_lambda = (
+            d_bar < lower_2
+            or current_state == NodeDecision.MAP
+            or cfg.showDLplot
+            or self.debug
+        )
+        lambda2 = metrics.ComputeFiedler() if need_lambda else np.nan
+        connected = bool(need_lambda) and (lambda2 > self.LAMBDA2_EPS)
+
+        if current_state == NodeDecision.MAP:
+            # Two-step recovery: d-bar back inside the 2-sigma band AND lambda_2 > 0.
+            recovered = (d_bar >= lower_2) and connected
+            ret = NodeDecision.LOCALIZE if recovered else NodeDecision.MAP
+        else:
+            ret = NodeDecision.LOCALIZE
+            if d_bar < lower_2:
+                if (not connected) or (d_bar < lower_4):
+                    ret = NodeDecision.MAP
+            # if ret != NodeDecision.MAP:
+            if True: # TODO: Debugging.
+                self.d_bar_hist.append(d_bar)
+                while len(self.d_bar_hist) > window:
+                    self.d_bar_hist.pop(0)
 
         if self.debug:
-            print(f"d_bar: {d_bar}, mu: {mu}, sigma: {sigma}, lambda_2: {lambda2}")
-            print(f"  Step 1: d_bar < mu-2sigma = {d_bar < (mu - 2*sigma)}")
-            print(f"  Step 2: d_bar < mu-4sigma = {d_bar < (mu - 4*sigma)}")
-            print(f"          lambda_2 = 0        {np.isclose(lambda2, 0)}")
+            print(f"\nd_bar: {d_bar}, mu: {mu}, sigma: {sigma}, lambda_2: {lambda2}")
+            print(f"  Step 1: d_bar < mu-2sigma = {d_bar < lower_2}")
+            print(f"  Step 2: d_bar < mu-4sigma = {d_bar < lower_4}")
+            print(f"          lambda_2 == 0       {need_lambda and not connected}")
+            print(f"  decision: {ret.name}\n")
 
-        ret = NodeDecision.LOCALIZE
+        if cfg.showDLplot:
+            plot_lambda = float(lambda2) if need_lambda else 0.0
+            plot_d_and_lambda(d_bar, float(lower_2), plot_lambda, ax=self.ax)
 
-        if d_bar < (mu - 2*sigma):
-
-            if np.isclose(lambda2, 0) or d_bar < (mu - 4*sigma):
-                ret = NodeDecision.MAP
-
-        # if metrics.currentState != NodeDecision.MAP:
-        self.d_bar_hist.append(d_bar)
-        while len(self.d_bar_hist) > self.params.twoStepConnectivityPolicy.movingAverageLength:
-            self.d_bar_hist.pop(0)
-
-        if self.params.twoStepConnectivityPolicy.showDLplot:
-            plot_d_and_lambda(d_bar, float(mu - 2*sigma), lambda2, ax=self.ax)
-
-        # return NodeDecision.LOCALIZE # Debugging purposes when don't want to switch to mapping mode
+        self.previousState_ = current_state
+        self.lastState = ret
+        return NodeDecision.LOCALIZE # TODO: Remove this
         return ret
 
 
-def plot_d_and_lambda(d_hist: float|list[float], 
+def plot_d_and_lambda(d_hist: float|list[float],
                       d2_hist: float|list[float],
                       lambda_hist: float|list[float],
-                      ax:Axes|None=None, 
+                      ax:Axes|None=None,
                       ) -> Axes:
     def _as_float_list(values: float|list[float]) -> list[float]:
         # Accept either one new sample or a batch of samples to append.
@@ -78,7 +111,7 @@ def plot_d_and_lambda(d_hist: float|list[float],
 
     if ax is None:
         fig, ax = plt.subplots()
-    
+
     state = getattr(ax, "_d_and_lambda_plot_state", None)
     if state is None:
         # Create the right-side axis once and keep both line artists for fast updates.
@@ -137,7 +170,4 @@ def plot_d_and_lambda(d_hist: float|list[float],
     state["lambda_ax"].relim()
     state["lambda_ax"].autoscale_view()
     ax.figure.canvas.draw_idle()
-
-    
-
     return ax

@@ -4,9 +4,10 @@ from scipy.spatial import KDTree
 import gtsam
 from common.customTypes import TreeData, DecisionType, NodeDecision, OverlapData
 from common.weighted_pose_graph_class import WeightedPoseGraph
-from common.FGVizHelpers import cleanFactorGraph, getRelativeCov
+from common.FGVizHelpers import cleanFactorGraph, getRelativeCov, ScanMatch
 from params import Params
 from copy import copy, deepcopy
+import time
 
 class Metrics:
     def __init__(self, method: DecisionType|list[DecisionType], params:Params=Params()):
@@ -20,6 +21,8 @@ class Metrics:
         self.closestDistance = np.inf
         self.lastInterFitness = np.inf
         self.overlapRatio = 0.0
+        self.d_bar = np.inf
+        self.lambda2 = np.nan
 
 
     def CalculateMetrics(self, 
@@ -33,6 +36,7 @@ class Metrics:
                          currentKeys: list[int],
                          overlapData: OverlapData,
                          ):
+        startTime = time.time()
         
         self.currentState = currentState
         self.lastPoseKey = lastPoseKey
@@ -47,31 +51,43 @@ class Metrics:
             self.ComputeOverlapRatio(overlapData)
 
         if DecisionType.FITNESS in self.method_:
-            if lastInterICPResult is not None:
-                self.lastInterFitness = lastInterICPResult.fitness
+            # if lastInterICPResult is not None:
+            #     self.lastInterFitness = lastInterICPResult.fitness
+            # else:
+            #     self.lastInterFitness = np.inf
+            if overlapData.currScan.has_points() and overlapData.closestPriorSubmap.has_points():
+                reg = ScanMatch(overlapData.currScan, overlapData.closestPriorSubmap, voxel_size=self.params.icp.voxelSize)
+                self.lastInterFitness = reg.fitness
             else:
                 self.lastInterFitness = np.inf
+
             if self.params.fitnessPolicy.debug:
                 print(f"Metrics: FitnessScore = {self.lastInterFitness}")
 
         if DecisionType.INLIER_RMSE in self.method_:
-            if lastInterICPResult is not None:
-                self.lastInterInlierRMSE = lastInterICPResult.inlier_rmse
+            # if lastInterICPResult is not None:
+            #     self.lastInterInlierRMSE = lastInterICPResult.inlier_rmse
+            # else:
+            #     self.lastInterInlierRMSE = np.inf
+            if overlapData.currScan.has_points() and overlapData.closestPriorSubmap.has_points():
+                reg = ScanMatch(overlapData.currScan, overlapData.closestPriorSubmap, voxel_size=self.params.icp.voxelSize)
+                self.lastInterInlierRMSE = reg.inlier_rmse
             else:
                 self.lastInterInlierRMSE = np.inf
+
             if self.params.inlierRMSEPolicy.debug:
                 print(f"Metrics: InlierRMSE = {self.lastInterInlierRMSE}")
 
         if DecisionType.TWO_STEP_VALIDATION in self.method_:
             self.gtsamGraph = cleanFactorGraph(isam)
             self.gtsamValues = isam.calculateEstimate()
-            # keysToUse = priorTreeData.keys.copy()
-            # if len(currentKeys) > self.params.fixedLagKeepFrames:
-            #     keysToUse += currentKeys[-self.params.fixedLagKeepFrames:]
-            # else:
-            #     keysToUse += currentKeys
-            # self.CreateNXGraph(keysToUse=keysToUse)
+            # Authors compute the Laplacian over the entire pose-graph
+            # (arXiv:2602.17226 §III-B), not a G-Loc-style local window.
             self.CreateNXGraph()
+
+            startTime = time.time()
+
+            self.ComputeDBar()
 
         if DecisionType.RELATIVE_COVARIANCE in self.method_:
             # Get the relative covariance between the last pose (next one to be marginalized out) and the closest prior pose
@@ -87,6 +103,7 @@ class Metrics:
                 jointMarginal = isam.jointMarginalCovariance([lastPoseKey, key])
                 self.relCov = getRelativeCov(values.atPose3(lastPoseKey), values.atPose3(key), jointMarginal.fullMatrix())
 
+        return time.time() - startTime
 
     def GetClosestKey(self, priorTreeData: TreeData, pose: gtsam.Pose3):
         d, i = priorTreeData.tree.query(pose.translation())
@@ -98,8 +115,18 @@ class Metrics:
     def CreateNXGraph(self, keysToUse:list[int]=[]):
         self.wpg = WeightedPoseGraph(self.gtsamGraph, self.gtsamValues, keysToUse=keysToUse)
 
-    def ComputeL(self):
-        pass
+    def ComputeDBar(self) -> float:
+        """Weighted average node degree d-bar from the T-weighted Laplacian.
+
+        d-bar := (1/m) sum_{k=2}^{m} lambda_k = tr(L_T)/m (arXiv:2602.17226, eq. 3).
+        """
+        self.d_bar = self.wpg.compute_average_degree(weight='weight_t')
+        return self.d_bar
+
+    def ComputeFiedler(self) -> float:
+        """Weighted Fiedler value lambda_2 of the E-weighted Laplacian."""
+        self.lambda2 = self.wpg.compute_fiedler_value(weight='weight_e')
+        return self.lambda2
 
     def ComputeOverlapRatio(self, overlapData: OverlapData):
         prior_xy = np.asarray(overlapData.closestPriorSubmap.points)[:,:2]
@@ -202,3 +229,8 @@ class Metrics:
         line_set.colors = o3d.utility.Vector3dVector([color for _ in range(len(lines))])
 
         return line_set
+
+    def CalcICPResult(self, overlapData: OverlapData):
+
+        reg = ScanMatch(overlapData.currScan, overlapData.closestPriorSubmap, voxel_size=self.params.icp.voxelSize)
+
