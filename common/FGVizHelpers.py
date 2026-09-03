@@ -5,6 +5,7 @@ import matplotlib.transforms as transforms
 from matplotlib.collections import LineCollection, PatchCollection
 from matplotlib.axes import Axes
 from matplotlib.lines import Line2D
+import matplotlib.colors as mcolors
 import numpy as np
 np.set_printoptions(linewidth=np.inf, suppress=False)
 import os
@@ -1298,6 +1299,8 @@ def createGlobalPCD(
     keys: list[int] | None = None,
     color: tuple[float, float, float] | None = None,
     voxel_size: float | None = None,
+    changeColorBySymbols:bool=False,
+    symbolColors: dict[int, str] = {},
 ) -> o3d.geometry.PointCloud:
     '''
     Merge per-pose point clouds into a single world-frame point cloud.
@@ -1311,12 +1314,31 @@ def createGlobalPCD(
     if keys is None:
         keys = list(values.keys())
 
+    nextColorInt = 0
     global_pcd = o3d.geometry.PointCloud()
     for key in keys:
         if key not in pcds:
             continue
         pcd = copy.deepcopy(pcds[key])
         pcd.transform(values.atPose3(key).matrix())
+        s = gtsam.Symbol(key)
+        if s.chr() not in symbolColors:
+            while True:
+                newColor = f'C{nextColorInt}'
+                if newColor in symbolColors.values():
+                    nextColorInt+=1
+                else:
+                    symbolColors[s.chr()] = newColor
+                    nextColorInt+=1
+                    break
+
+        if changeColorBySymbols:
+
+            # Convert 'C0' to an RGB float tuple (ranges from 0.0 to 1.0)
+            rgb_color = mcolors.to_rgb(symbolColors[s.chr()])
+            # print(rgb_color)  # Example output: (0.12156862745098039, 0.4666666666666667, 0.7058823529411765)
+            pcd.paint_uniform_color(rgb_color) # TODO Switch color mapping from matplotlib colors
+
         global_pcd += pcd
 
     if color is not None:
@@ -1362,9 +1384,10 @@ def ScanMatch(
         source: o3d.geometry.PointCloud, 
         target: o3d.geometry.PointCloud, 
         trans_init: np.ndarray = np.eye(4), 
-        threshold: float = 0.02, 
+        maxCorrespondenceDist: float = 0.5,
         showResult: int = 0,
-        voxel_size: float | None = 0.1,
+        voxelSize: float | None = 0.1,
+        returnTightEval:bool=False
         ) -> o3d.pipelines.registration.RegistrationResult:
     '''
     Inputs:
@@ -1377,14 +1400,14 @@ def ScanMatch(
     source = copy.deepcopy(source)
     target = copy.deepcopy(target)
 
-    if voxel_size is not None:
-        # source = source.voxel_down_sample(voxel_size)
-        target = target.voxel_down_sample(voxel_size)
+    if voxelSize is not None:
+        # source = source.voxel_down_sample(voxelSize)
+        target = target.voxel_down_sample(voxelSize)
     
     if showResult == 1 or showResult == 3:
         print("Initial alignment")
         evaluation = o3d.pipelines.registration.evaluate_registration(
-            source, target, threshold, trans_init
+            source, target, maxCorrespondenceDist, trans_init
         )
         print(evaluation)
         print("Initial Transformation is:")
@@ -1392,7 +1415,7 @@ def ScanMatch(
         draw_registration_result(source, target, trans_init, title="Initial Transform")
 
     reg = o3d.pipelines.registration.registration_generalized_icp(
-        source, target, 0.5, trans_init,
+        source, target, maxCorrespondenceDist, trans_init,
         o3d.pipelines.registration.TransformationEstimationForGeneralizedICP()
     )
     
@@ -1403,6 +1426,12 @@ def ScanMatch(
         print("Transformation is:")
         print(trans_final)
         draw_registration_result(source, target, trans_final, title="Final Transform")
+
+    if returnTightEval:
+        final_eval = o3d.pipelines.registration.evaluate_registration(
+            source, target, 0.5, reg.transformation
+        )
+        return final_eval
     
     return reg
 
@@ -1501,3 +1530,66 @@ def show_graphviz(dot_string):
     plt.imshow(img)
     plt.axis("off")  # Hide grid lines/axes
     plt.pause(0.1)   # Opens a live window; script pauses until closed
+
+
+#####################################################################
+#                            GPS Tools                              #
+#####################################################################
+
+# Creates a local tangent plane approximation around the reference point
+# Accurate approximation up to a couple of kilometers
+EARTH_RADIUS = 6378135.0  # meters
+
+def latlon_to_xy(lat, lon, lat_ref, lon_ref):
+    """
+    Convert latitude/longitude to local EN coordinates.
+
+    x = East (meters)
+    y = North (meters)
+
+    lat, lon, lat_ref, lon_ref are in degrees.
+    """
+    lat_rad = np.radians(lat)
+    lon_rad = np.radians(lon)
+    lat_ref_rad = np.radians(lat_ref)
+    lon_ref_rad = np.radians(lon_ref)
+
+    x = EARTH_RADIUS * (lon_rad - lon_ref_rad) * np.cos(lat_ref_rad)
+    y = EARTH_RADIUS * (lat_rad - lat_ref_rad)
+
+    return x, y
+
+
+def xy_to_latlon(x, y, lat_ref, lon_ref):
+    """
+    Convert local EN coordinates back to latitude/longitude.
+
+    x = East (meters)
+    y = North (meters)
+
+    Returns:
+        lat, lon in degrees
+    """
+    lat_ref_rad = np.radians(lat_ref)
+    lon_ref_rad = np.radians(lon_ref)
+
+    lat = lat_ref_rad + y / EARTH_RADIUS
+    lon = lon_ref_rad + x / (EARTH_RADIUS * np.cos(lat_ref_rad))
+
+    return np.degrees(lat), np.degrees(lon)
+
+def reference_latlon_from_xy(lat, lon, x, y):
+    """
+    Given a GPS point and the desired local x/y coordinate
+    of that point, calculate the GPS reference point.
+    """
+    lat_rad = np.radians(lat)
+
+    lat_ref = lat - np.degrees(y / EARTH_RADIUS)
+    lon_ref = lon - np.degrees(
+        x / (EARTH_RADIUS * np.cos(lat_rad))
+    )
+
+    return lat_ref, lon_ref
+
+#####################################################################

@@ -10,7 +10,7 @@ class DistancePolicy(NodeDecisionPolicy):
             if metrics.closestDistance < self.params.distancePolicy.minDistance:
                 self.initialized = True
             else:
-                return NodeDecision.INITIALIZE
+                return NodeDecision.MAP
         if np.isfinite(metrics.closestDistance):
             if metrics.closestDistance > self.params.distancePolicy.minDistance:
                 return NodeDecision.MAP
@@ -24,7 +24,7 @@ class OverlapPolicy(NodeDecisionPolicy):
             if metrics.overlapRatio > self.params.overlapPolicy.overlapThreshold:
                 self.initialized = True
             else:
-                return NodeDecision.INITIALIZE
+                return NodeDecision.MAP
         if metrics.overlapRatio < self.params.overlapPolicy.overlapThreshold:
             return NodeDecision.MAP
 

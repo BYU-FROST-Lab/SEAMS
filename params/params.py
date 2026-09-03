@@ -5,14 +5,14 @@ from pathlib import Path
 # ICP params
 @dataclass
 class ICP:
-    voxelSize: float | None = 0.1   # Either > 0.0 or None. If None, no downsampling is performed.
+    voxelSize: float | None = 0.4   # Either > 0.0 or None. If None, no downsampling is performed.
 
 # Loop Closure params
 @dataclass
 class LoopClosure:
     noiseScale: float = 1
     prevFrameSkip: int = 50
-    distMax: int = 20
+    distMax: int = 40
     skipFrames: int = 0
     intraNearKeyFrames: int = 5     # Same session
     interNearKeyFramesPrior: int = 5     # >=0 Between session. Number of key frames on each side of the current pose to use for registration to the prior session.
@@ -20,6 +20,8 @@ class LoopClosure:
     voxelSize: float | None = 0.4
     maxPossibleConnections: int = 1
     fitnessThreshold: float = 0.5
+    rmseThreshold: float = 0.3
+    maxCorrespondenceDist: float = 0.5
     showScanMatchResult: int = 0    # 0 = no visualization, 1 = visualize initial alignment, 2 = visualize final alignment, 3 = visualize both
     showResultSkipFrames: int = 0   # 0 = visualize every frame, 1 = visualize every other frame, 2 = visualize every third frame, etc.
     debug: bool = False
@@ -37,15 +39,17 @@ class OverlapPolicy:
 
 # Registration policy
 @dataclass
-class FitnessPolicy:
-    fitnessThreshold: float = 0.55
+class InlierRatioPolicy:
+    fitnessThreshold: float = 0.70
     fitnessHysteresisMargin: float = 0.0
     debug: bool = False
 
 @dataclass
 class InlierRMSEPolicy:
-    inlierRMSEThreshold: float = 0.25
-    inlierRMSEHysteresisMargin: float = 0.01
+    inlierRMSEThreshold: float = 0.24
+    inlierRMSEHysteresisMargin: float = 0.0
+    minCorrespondenceSet: int = 1000
+    vizScanMatch: bool = False
     debug: bool = False
 
 # Graph Theoretic
@@ -64,6 +68,7 @@ class RelativeCovariancePolicy:
     threshold: list[float] = field(
         default_factory=lambda: [1., 1., 1.]    # [x, y, z, det]
         )
+    logDetThreshold: float = -30.0
     debug: bool = False
 
 
@@ -74,7 +79,6 @@ class Params:
     ##################################################################
 
     # Fixed Lag Smoother Params
-    fixedLagCurrentSession: bool = False
     fixedLagKeepFrames: int = 10
     fixedLagMarg: FixedLagMarginalizationType = FixedLagMarginalizationType.APPROX_PRIOR
     linearFactorMaxNodes: int = 2
@@ -87,7 +91,7 @@ class Params:
     autoRename: bool = True
         
     # Decision params
-    policyType: DecisionType = DecisionType.FITNESS
+    policyType: DecisionType = DecisionType.INLIER_RATIO
 
     # Current session params
     dataset: str = "nc"
@@ -96,12 +100,24 @@ class Params:
     bagFile: Path | None = dataDir / mission
     gtFile: Path | None = dataDir / f"ground_truth_tum/gt-nc-{mission}.csv"
 
+    # 0: Only add to prior at end of session
+    # 1: add to prior when transitioning from mapping to localization 
+    # 2: add to prior whenever in mapping mode
+    priorUpdateMethod: int = 0 
+
     # Save session params
     moduleDir: Path = Path(__file__).parents[1]
     loadSessionDir: Path |None = None
     saveSessionDir: Path = moduleDir / "results/nc/default_session"
 
+    # Odometry
     kissICPConfigFile: Path = Path("/home/benb/blocklio/python/params/kiss_icp.yaml")
+    refineOdometry: bool = False    # Refine the odometry using an additional scan match after kiss-icp
+
+    # GPS
+    useGps: bool = False
+    gpsCovThreshold: float = 2.0    # meters
+    gpsDistThreshold: float = 10.0  # meters
     
     # Other dataclasses (other structs)
     icp: ICP = field(default_factory=ICP)
@@ -114,7 +130,7 @@ class Params:
     # Other dataclasses (other structs)
     distancePolicy: DistancePolicy = field(default_factory=DistancePolicy)
     overlapPolicy: OverlapPolicy = field(default_factory=OverlapPolicy)
-    fitnessPolicy: FitnessPolicy = field(default_factory=FitnessPolicy)
+    inlierRatioPolicy: InlierRatioPolicy = field(default_factory=InlierRatioPolicy)
     inlierRMSEPolicy: InlierRMSEPolicy = field(default_factory=InlierRMSEPolicy)
     twoStepConnectivityPolicy: TwoStepConnectivityPolicy = field(default_factory=TwoStepConnectivityPolicy)
     relativeCovariancePolicy: RelativeCovariancePolicy = field(default_factory=RelativeCovariancePolicy)

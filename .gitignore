@@ -8,6 +8,7 @@ results/
 TestResults/
 policy_evaluation/
 *.lock
+data_sets
 
 
 # Byte-compiled / optimized / DLL files

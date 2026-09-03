@@ -1,3 +1,3 @@
-from params.params import Params
+from params.params import Params, LoopClosure
 
-__all__ = ["Params"]
+__all__ = ["Params", "LoopClosure"]

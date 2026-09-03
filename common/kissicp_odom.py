@@ -139,8 +139,12 @@ class KissICPOdomLive:
         """
         if isinstance(config_file_path, str):
             config_file_path = Path(config_file_path)
+
+        try:
+            config = load_config(config_file_path, max_range=max_range)
+        except:
+            config = load_config(config_file_path)
             
-        config = load_config(config_file_path, max_range=max_range)
         self.odometry_ = KissICP(config)
         
         # Absolute structural path integration storage arrays

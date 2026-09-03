@@ -23,7 +23,10 @@ class GroundTruthLoader:
             try:
                 self.gt_df = pd.read_csv(path_to_gt, delimiter=' ', dtype=float)
             except Exception as e2:
-                raise ValueError(f"Failed to read ground truth file: {path_to_gt}. Error: {e2}") from e
+                try:
+                    self.gt_df = pd.read_csv(path_to_gt, delimiter=', ', dtype=float)
+                except Exception as e3:
+                    raise ValueError(f"Failed to read ground truth file: {path_to_gt}. Error: {e3}") from e
         if self.gt_df.empty:
             raise ValueError(f"Ground truth file is empty: {path_to_gt}")
 

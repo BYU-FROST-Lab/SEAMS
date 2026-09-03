@@ -12,14 +12,15 @@ class TreeData:
     points: list[list[float]]
 
 @dataclass
-class OverlapData:
-    closestPriorSubmap: o3d.geometry.PointCloud = o3d.geometry.PointCloud()
-    # priorEll: float = 0.0
-    priorCenterPoint: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0]))
-    priorMinPoint: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0]))
-    priorMaxPoint: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0]))
+class ClosestSubmapData:
+    closestSubmap: o3d.geometry.PointCloud = o3d.geometry.PointCloud()
+    submapKey: int = 0
+    submapCenterPoint: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0]))
+    submapMinPoint: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0]))
+    submapMaxPoint: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0]))
+
     currScan: o3d.geometry.PointCloud = o3d.geometry.PointCloud()
-    # currEll: float = 0.0
+    currKey: int = 0
     currCenterPoint: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0]))
     currMinPoint: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0]))
     currMaxPoint: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0]))
@@ -33,13 +34,11 @@ class DecisionType(Enum):
     OVERLAP = auto()
 
     # registration
-    FITNESS = auto()
+    INLIER_RATIO = auto()
     INLIER_RMSE = auto()
 
     # graph theoretic
-    TWO_STEP_VALIDATION = auto()
-    # TWO_OPTION = auto()
-    # SUPER_NODE_PRIOR = auto()
+    # TWO_STEP_VALIDATION = auto()
 
     # probablistic
     RELATIVE_COVARIANCE = auto()

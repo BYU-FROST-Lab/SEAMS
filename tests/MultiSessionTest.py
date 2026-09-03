@@ -20,7 +20,7 @@ import gtsam
 import gtsam_unstable
 import common.FGVizHelpers as fgtools
 from multiSession.SessionManager import SessionManager
-from params import Params
+from params import Params, LoopClosure
 from common.customTypes import DecisionType, FixedLagMarginalizationType
 from common.LiveMapVisualizer import LiveMapVisualizer
 from common.kissicp_odom import KissICPOdom
@@ -66,8 +66,9 @@ def update_session_worker(i, cs, deskewed_points, relPose_tmp, timestamp):
 def run_session(params: Params = Params(), 
                 enable_matplotlib: bool = ENABLE_MATPLOTLIB, 
                 enable_open3d: bool = ENABLE_OPEN3D,
-                policy: str | None = None,
-                evaluate_decision_types: bool = False
+                policy: DecisionType | None = None,
+                evaluate_decision_types: list[DecisionType] = [],
+                lastRun: bool = True
                 ):
     #########################################################################################
     # Session Parameters
@@ -80,34 +81,51 @@ def run_session(params: Params = Params(),
     SAME_SESSION_COV_CHANGE_PLOT = False
     SAVE_COVARIANCE_OF_CURRENT_POSE = False
     SAVE_UPDATE_TIMING = False
+    SHOW_PRIOR_VALUES = False
 
     show_mpl = enable_matplotlib
     show_o3d = enable_open3d
 
+    ax = None
+
     #########################################################################################
-    if evaluate_decision_types:
+    vizIndex=0
+    if evaluate_decision_types and (params.loadSessionDir is not None or params.priorUpdateMethod == 2):
         currentSession = []
-        still_valid = [True] * len(DecisionType)
+        still_valid = [True] * len(evaluate_decision_types)
         if params.loadSessionDir is not None:
             shared_pcds = fgtools.loadSymbolPCDs(params.loadSessionDir / "scans")
         else:
             shared_pcds = None
-        for dt in DecisionType:
+        for idx, dt in enumerate(evaluate_decision_types):
+            if dt == policy:
+                vizIndex = idx
             tmpParams = copy.deepcopy(params)
             tmpParams.policyType = dt
             if tmpParams.loadSessionDir is not None:
                 if Path(tmpParams.loadSessionDir / dt.name).exists():
                     tmpParams.loadSessionDir = tmpParams.loadSessionDir / dt.name
             session = SessionManager(params=tmpParams)
-            session.LoadSession(sharedScans=shared_pcds)
+            try:
+                session.LoadSession(sharedScans=shared_pcds)
+            except Exception as e:
+                still_valid[idx] = False
+                print(f"Couldn't load session for {dt.name}.")
+            if params.dataset == 'nclt':
+                session.SetGpsReference(lat=42.293227, lon=-83.709657, alt=270)
+
             currentSession.append(session)
     else:
         if params.loadSessionDir is not None:
             if Path(params.loadSessionDir / params.policyType.name).exists():
                 params.loadSessionDir = params.loadSessionDir / params.policyType.name
         currentSession = [SessionManager(params.loadSessionDir, params)]
+        if params.dataset == 'nclt':
+            currentSession[0].SetGpsReference(lat=42.293227, lon=-83.709657, alt=270)
+        
         still_valid = [True]
-
+# |
+# v
     bag1 = ReadTopicsFromRosbag(str(params.bagFile), waiting_threshold=1.0)
 
     if params.gtFile is not None:
@@ -124,14 +142,17 @@ def run_session(params: Params = Params(),
     poses = []
 
     sessionSymbols = {ord('c'): 'C0'}#,ord('A'): 'C1', ord('B'): 'C2', ord('C'): 'C3'}
+    for i, c in enumerate(currentSession[0].priorSessionSymbols_):
+        sessionSymbols[ord(c)] = f'C{i+1}'
 
+    plt.close("all")
     if show_mpl:
         # fig, ax = plt.subplots()
         fig, ax = plt.subplots(figsize=(10, 8))
 
     viz = None
     if show_o3d:
-        viz = LiveMapVisualizer(currentSession[0], window_name="MultiSession — Live Map")
+        viz = LiveMapVisualizer(currentSession[vizIndex], window_name="MultiSession — Live Map")
         viz.start()
 
     start_time = time.time()
@@ -142,26 +163,35 @@ def run_session(params: Params = Params(),
     whole_graph_info_dets: list[float] = []
     cov_current_pose_arr = []
     updateTimes = []
+    gps_msg = []
 
-    plotTitle = f"Final Graph - {params.dataset.upper()}: {params.mission} - {currentSession[0].params.policyType.name}"
+    plotTitle = f"Final Graph - {params.dataset.upper()}: {params.mission} - {currentSession[vizIndex].params.policyType.name}"
+# |
+# v
 
-    for topic, timestamp, xyz_points in bag1.next_message():
+    for topic, timestamp, msg_return in bag1.next_message():
         if firstTimestamp is None:
             firstTimestamp = timestamp
+
+        if topic in bag1.gps_topics:
+            if not msg_return:
+                continue
+            gps_msg: list = [timestamp] + msg_return
+            continue
 
         
         if firstPass and gt is not None:
             gtPose = gt.get_closest_gt(timestamp)
-            # if params.dataset == "nclt":
-            #     # GT in body frame. Need Lidar in body frame
-            #     # Transformation pulled from Table 4 in https://robots.engin.umich.edu/nclt/nclt.pdf
-            #     T_lidar2body = gtsam.Pose3(gtsam.Rot3.Ypr(np.deg2rad(-90.703), np.deg2rad(0.166), np.deg2rad(0.807)), 
-            #                     gtsam.Point3(0.002, -0.004, -0.957))
-            #     gtPose = gtPose.compose(T_lidar2body)
-            #     # gtPose = T_lidar2body.compose(gtPose)
+            if params.dataset == "nclt" and params.mission == "2012-01-08_bin":
+                # GT in body frame. Need Lidar in body frame
+                # Transformation pulled from Table 4 in https://robots.engin.umich.edu/nclt/nclt.pdf
+                T_lidar2body = gtsam.Pose3(gtsam.Rot3.Ypr(np.deg2rad(-90.703), np.deg2rad(0.166), np.deg2rad(0.807)), 
+                                gtsam.Point3(0.002, -0.004, -0.957))
+                gtPose = gtPose.compose(T_lidar2body)
+                # gtPose = T_lidar2body.compose(gtPose)
             print(f"Initial pose is: \n{gtPose}")
             kissOdom.set_initial_pose(gtPose)
-        composedPose_odom, relPose_odom, deskewed_points = kissOdom.process_next_keyframe(xyz_points) # Poses are returned in the odometry frame, not the robot's frame
+        composedPose_odom, relPose_odom, deskewed_points = kissOdom.process_next_keyframe(msg_return) # Poses are returned in the odometry frame, not the robot's frame
         pointCloud = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(deskewed_points))
 
         if firstPass:
@@ -171,12 +201,13 @@ def run_session(params: Params = Params(),
                 # gtPose = gt.get_closest_gt(timestamp)
                 # print(f"Initial pose is: \n{gtPose}")
                 for cs in currentSession:
-                    sessionResult = cs.Update(pointCloud, gtPose, timestamp=timestamp)
+                    sessionResult = cs.Update(pointCloud, gtPose, timestamp=timestamp, gpsData=gps_msg)
                 # poses.append(gtPose)
             else:
                 for cs in currentSession:
-                    sessionResult = cs.Update(pointCloud, composedPose_odom, timestamp=timestamp)
+                    sessionResult = cs.Update(pointCloud, composedPose_odom, timestamp=timestamp, gpsData=gps_msg)
                 # poses.append(composedPose_odom)
+                gps_msg.clear()
             update_time = time.time() - update_time
             firstPass = False
             lastPose_odom = composedPose_odom
@@ -193,13 +224,17 @@ def run_session(params: Params = Params(),
             for i, cs in enumerate(currentSession):
                 if not still_valid[i]:
                     continue
-                # try:
-                results[i] = cs.Update(pointCloud, relPose=copy.deepcopy(relPose_tmp), timestamp=copy.copy(timestamp))
-                # except Exception as e:
-                #     print(f"Error updating session {cs.params.policyType.name}: {e}")
-                #     still_valid[i] = False
+                if evaluate_decision_types:
+                    try:
+                        results[i] = cs.Update(pointCloud, relPose=copy.deepcopy(relPose_tmp), timestamp=copy.copy(timestamp), gpsData=gps_msg)
+                    except Exception as e:
+                        print(f"Error updating session {cs.params.policyType.name}: {e}")
+                        still_valid[i] = False
+                else:
+                    results[i] = cs.Update(pointCloud, relPose=copy.deepcopy(relPose_tmp), timestamp=copy.copy(timestamp), gpsData=gps_msg)
 
-
+# |
+# v
             # sessionResults = [None] * len(currentSession)
 
             # with ThreadPoolExecutor(max_workers=len(currentSession)) as executor:
@@ -234,9 +269,12 @@ def run_session(params: Params = Params(),
             # print(f"Frame {totalCnt}: relative pose computed")
             # print(f"    Translation: {relPose_tmp.translation()}, Rotation: {relPose_tmp.rotation().rpy()}")
 
+        gps_msg.clear()
+
         if totalCnt == 35:
             pass
-
+# |
+# v
         if SAME_SESSION_COV_CHANGE_PLOT:
             start = time.time()
 
@@ -263,8 +301,8 @@ def run_session(params: Params = Params(),
             # Get Covariance of New nodes #
             ###############################
 
-            refKeys = currentSession[0].GetKeys(currentSession[0].addToPriorSymbol)
-            currIsam = currentSession[0].isam2
+            refKeys = currentSession[vizIndex].GetKeys(currentSession[vizIndex].addToPriorSymbol)
+            currIsam = currentSession[vizIndex].isam2
             for k in refKeys:
                 if k in sscp_dets:
                     sscp_dets[k].append(np.linalg.det(currIsam.marginalCovariance(k))) # Take determinant of translation part of covariance matrix
@@ -273,15 +311,14 @@ def run_session(params: Params = Params(),
             print(f"Time to calc full det: {time.time() - start}")
 
             start = time.time()
-            currentSession[0].isam2.marginalInformation(k)
+            currentSession[vizIndex].isam2.marginalInformation(k)
             print(f"Time to calc marg information from isam: {time.time() - start}")
 
             start = time.time()
-            currentSession[0].smoother_.marginalCovariance(k)
+            currentSession[vizIndex].smoother_.marginalCovariance(k)
             print(f"Time to calc marg information from isam: {time.time() - start}")
-            
-
-
+# |
+# v
             ##################################
             # Get Information of Full window #
             ##################################
@@ -303,7 +340,7 @@ def run_session(params: Params = Params(),
             # print(f"Time to calc full det: {time.time() - start}")
 
         if SAVE_COVARIANCE_OF_CURRENT_POSE:
-            cov = currentSession[0].smoother_.marginalCovariance(currentSession[0].lastOdomKey_)
+            cov = currentSession[vizIndex].smoother_.marginalCovariance(currentSession[vizIndex].lastOdomKey_)
             cov_current_pose_arr.append(cov)
 
         if SAVE_UPDATE_TIMING:
@@ -313,28 +350,34 @@ def run_session(params: Params = Params(),
         if cnt >= MAX_COUNT: # or totalCnt > 225:
         # if True:
             cnt = 0
-
+# |
+# v
             if show_mpl:
-                ax.clear()
+                if ax:
+                    ax.clear()
+                else:
+                    ax = fgtools.plot_graph(gtsam.NonlinearFactorGraph(), gtsam.Values())
                 # fgtools.plot_graph(currentSession.prior.graph, currentSession.prior.values, ax=ax, color_override=bag_colors[0], alpha=0.5)
                 # fgtools.plot_graph(currentSession.current.graph, currentSession.current.values, ax=ax, title="Testing Loop Closure in Graph", color_override=bag_colors[1], alpha=0.5)
-                tmpValues = currentSession[0].values
+                tmpValues = currentSession[vizIndex].values
                 # fgtools.plot_graph(currentSession.priorGraph, currentSession.priorValues, color_override="tab:grey", ax=ax, title="Testing Combined Graph", changeColorBySymbols=False)
                 # fgtools.plot_graph_covariances(currentSession.priorValues.keys(), currentSession.priorGraph, currentSession.priorValues, ax=ax, edgecolor="tab:grey")
                 if gt is not None:
                     ax.plot(gt.array[:,1], gt.array[:,2], color='tab:green', label='Ground Truth', alpha=0.5)
                     # ax.plot(gt2.array[:,1], gt2.array[:,2], color='tab:orange', label='Ground Truth Block0', alpha=0.5)
-                fgtools.plot_graph(currentSession[0].graph, tmpValues, ax=ax, title=plotTitle, changeColorBySymbols=True, addKeyLabels=False, symbolColors=sessionSymbols)
-                if currentSession[0].interLoopTree_ is not None:
-                    fgtools.plot_points(currentSession[0].interLoopTree_.keys, currentSession[0].currentEstimate_, "tab:red", ax=ax)
-                # fgtools.plot_graph_covariances(tmpValues.keys(), currentSession.fixedLagSmoother, tmpValues, ax=ax, changeColorBySymbols=True, symbolColors=sessionSymbols)
+                fgtools.plot_graph(currentSession[vizIndex].graph, tmpValues, ax=ax, title=plotTitle, changeColorBySymbols=True, addKeyLabels=False, symbolColors=sessionSymbols)
+                if currentSession[vizIndex].params.policyType == DecisionType.RELATIVE_COVARIANCE:
+                    fgtools.plot_graph_covariances(tmpValues.keys(), currentSession[vizIndex].fixedLagSmoother, tmpValues, ax=ax, changeColorBySymbols=True, symbolColors=sessionSymbols)
+                # Plot prior tree keys
+                if currentSession[vizIndex].interLoopTree_ is not None and SHOW_PRIOR_VALUES:
+                    fgtools.plot_points(currentSession[vizIndex].interLoopTree_.keys, currentSession[vizIndex].currentEstimate_, "tab:red", ax=ax)
                 # odom_values = gtsam.Values()
                 # for i, pose in enumerate(kissOdom.poses):
                 #     odom_values.insert(gtsam.Symbol('o', i).key(), pose)
                 # fgtools.plot_points(odom_values.keys(), odom_values, color='tab:red', ax=ax)
                 
                 if FIXED_WINDOW:
-                    windowKeys = currentSession[0].GetMostRecentKeys(params.fixedLagKeepFrames+1)
+                    windowKeys = currentSession[vizIndex].GetMostRecentKeys(params.fixedLagKeepFrames+1)
                     p1 = tmpValues.atPose3(windowKeys[-1])
                     p2 = tmpValues.atPose3(windowKeys[0])
                     offset = 5
@@ -351,7 +394,7 @@ def run_session(params: Params = Params(),
 
         cnt += 1
         totalCnt += 1
-        prevISAM2 = currentSession[0].isam2
+        prevISAM2 = currentSession[vizIndex].isam2
 
         if not any(still_valid):
             print("\n")
@@ -381,7 +424,8 @@ def run_session(params: Params = Params(),
 
         final_graph, final_values, _, _ = cs.GetFinalSessionInfo()
         ax = fgtools.plot_graph(final_graph, final_values, ax=ax, title=plotTitle, addKeyLabels=False, changeColorBySymbols=True, symbolColors=sessionSymbols)
-
+# ^
+# |
         if SAVE_FULL_SESSION:
             cs.SaveSession(params.saveSessionDir)
             if params.loadSessionDir:
@@ -415,25 +459,32 @@ def run_session(params: Params = Params(),
     if SAVE_COVARIANCE_OF_CURRENT_POSE:
         with open(params.saveSessionDir / "cov_of_currentPoses.pkl", "wb") as f:
             pickle.dump(cov_current_pose_arr, f)
-
+# ^
+# |
     if SAVE_UPDATE_TIMING:
         with open(params.saveSessionDir / "update_timing.pkl", "wb") as f:
                     pickle.dump(updateTimes, f)
 
-    print("Done with session")
+    print("Done with session\n")
     
-    # if show_mpl:
-    plt.show()
+    if lastRun:
+        plt.show()
+        pass
+    else:
+        plt.pause(10)
 
 
 
-if __name__ == "__main__":
+
+def main():
     from argparse import ArgumentParser
     parser = ArgumentParser(description="Run Multi-Session Test")
     # Argument for which dataset to use (current option is to use the Newer College dataset)
     parser.add_argument("-d", "--dataset", type=str, default="nc", choices=["nc", "nclt", "urban"],help="Dataset to use (default: nc). Options: nc, nclt, urban")
     # Argument for which mission to run in the dataset
-    parser.add_argument("-m", "--mission", type=str, default="", help="Mission to run in the dataset.")
+    parser.add_argument("-m", "--missions", nargs="+", type=str, default="", help="Mission to run in the dataset.")
+    # Argument for the form of updating prior map
+    parser.add_argument("--prior_update_method", type=int, default=None, help="How to update the prior map. 0: Post session, 1: incremental, or 2: continuous")
     # Argument for the load session directory (optional)
     parser.add_argument("-l", "--load_session_dir", type=str, default=None, help="Directory to load a previous session from (default: None)")
     # Argument for the save session directory (optional)
@@ -449,17 +500,21 @@ if __name__ == "__main__":
     )
     parser.add_argument_group("Decision Type Evaluation", "Options for evaluating different decision types")
     parser.add_argument(
+        "-e",
         "--evaluate_decision_types",
-        action="store_true",
+        type=list[str],
+        default=[],
+        choices=[dt.name for dt in DecisionType],
         help="Evaluate different decision types by running the session multiple times with different decision policies. "
-             "This will override the --policy argument and run the session for each decision type.",
+             "This will override the --policy argument and run the session for each decision type selected.",
     )
     parser.add_argument(
+        "-p",
         "--policy",
         type=str,
         default=None,
         choices=[dt.name for dt in DecisionType],
-        help="Decision policy to use for the session. Options: DISTANCE, OVERLAP, FITNESS, INLIER_RMSE, TWO_STEP_VALIDATION, RELATIVE_COVARIANCE. "
+        help="Decision policy to use for the session. Options: DISTANCE, OVERLAP, INLIER_RATIO, INLIER_RMSE, TWO_STEP_VALIDATION, RELATIVE_COVARIANCE. "
              "This argument is ignored if --evaluate_decision_types is set.",
     )
     
@@ -469,136 +524,165 @@ if __name__ == "__main__":
     # Hardcode values for testing purposes #
     ########################################
 
-    # args.evaluate_decision_types = True
-    # args.policy = "NONE"
-    # args.policy = "DISTANCE"
-    # args.policy = "OVERLAP"
-    args.policy = "FITNESS"
-    # args.policy = "INLIER_RMSE"
-    # args.policy = "TWO_STEP_VALIDATION"
-    # args.policy = "RELATIVE_COVARIANCE"
+    args.evaluate_decision_types = [
+        # "NONE",
+        # "DISTANCE",
+        # "OVERLAP",
+        # "INLIER_RATIO",
+        # "INLIER_RMSE",
+        # # # "TWO_STEP_VALIDATION",
+        # "RELATIVE_COVARIANCE",
+    ]   
+    args.policy = "INLIER_RATIO"
+    # args.viz = "none"
+    args.prior_update_method = 0
 
     args.dataset = "nc"
-    args.mission = "quad-hard"
-    args.load_session_dir = moduleDir / "results/nc/quad-easy/"
-    # args.save_session_dir = moduleDir / "results/nc/quad-easy"
+    args.missions = [
+        # "quad-easy",
+        # "quad-medium",
+        # "quad-hard",
+        # "cloister",
+        "park",
+    ]
+    # args.load_session_dir = moduleDir / "results/nc/post/quad-medium__quad-easy/"
+    args.load_session_dir = moduleDir / "results/nc/post/cloister__quad-hard__quad-medium__quad-easy"
+    # args.save_session_dir = moduleDir / "results/nc/post_session/quad-easy"
 
     # args.dataset = "urban"
     # args.mission = "block1"
     # args.load_session_dir = None
-    # args.load_session_dir = moduleDir / "results/newOdom/urban/block0/"
-    # args.save_session_dir = moduleDir / "results/newOdom/urban/block0"
+    # args.load_session_dir = moduleDir / "results/urban/block0/"
+    # args.save_session_dir = moduleDir / "results/urban/block0"
     # args.load_session_dir = moduleDir / "results/test/urban/block1_prior_block0/"
     # args.load_session_dir = moduleDir / "policy_evaluation/urban2/block1_prior_block0/"
     # args.load_session_dir = moduleDir / "policy_evaluation/urban2/block0"
     # args.viz = "none"
 
     # args.dataset = "nclt"
-    # args.mission = "3"
-    # args.load_session_dir = None
+    # args.missions = [
+    #     # "2012-01-08",
+    #     # "2012-01-15",
+    #     "2012-01-22",
+    #     "2012-04-29",
+    #     "2012-05-11",
+    #     "2012-06-15",
+    # ]
+    # args.load_session_dir = moduleDir / "results/nclt/post/2012-01-22__2012-01-15__2012-01-08"
     # args.save_session_dir = moduleDir / "results/nclt/1_nclt2ros"
 
     ########################################
 
+    priorUpdateMethod = Params().priorUpdateMethod if not args.prior_update_method else args.prior_update_method
+    priorUpdateMethodString = "post" if priorUpdateMethod == 0 else "incremental" if priorUpdateMethod == 1 else "continuous"
 
-    mission = args.mission
-    if args.dataset == "nc":
-        nc_data_dir = Path("/home/benb/data_sets/NewerCollege/ros2")
-        if args.mission == "quad-easy":
-            bag_file = nc_data_dir / "quad-easy"
-            gt_file = nc_data_dir / "ground_truth_tum" / "gt-nc-quad-easy.csv"
-        elif args.mission == "quad-medium":
-            bag_file = nc_data_dir / "quad-medium"
-            gt_file = nc_data_dir / "ground_truth_tum" / "gt-nc-quad-medium.csv"
-        elif args.mission == "quad-hard":
-            bag_file = nc_data_dir / "quad-hard"
-            gt_file = nc_data_dir / "ground_truth_tum" / "gt-nc-quad-hard.csv"
+    i = 0
+    for i, mission in enumerate(args.missions):
+
+        if args.dataset == "nc":
+            nc_data_dir = Path("/home/benb/data_sets/NewerCollege/ros2")
+            bag_file = nc_data_dir / mission
+            gt_file = nc_data_dir / "ground_truth_tum" / f"gt-nc-{mission}.csv"
+
+        elif args.dataset == "urban":
+            urban_data_dir = Path("/home/benb/data_byu/bags/urban")
+            bag_file = urban_data_dir / mission
+            gt_file = urban_data_dir / "groundTruth" / f"{mission}_gt" / "optimized_poses.txt"
+
+        elif args.dataset == "nclt":
+            if mission == "2012-01-08_bin":
+                nclt_data_dir = Path("/home/benb/data_sets/NCLT")
+                bag_file = nclt_data_dir / "2012-01-08/2012-01-08_bin_ros2"
+                gt_file = nclt_data_dir / "2012-01-08/groundtruth_2012-01-08.csv"
+            else:
+                nclt_data_dir = Path("/home/benb/data_sets/NCLT/nclt2ros/")
+                bag_file = nclt_data_dir / f"rosbags/{mission}/ros2_bag/"
+                gt_file = nclt_data_dir / f"raw_data/{mission}/ground_truth/groundtruth_{mission}.csv"
         else:
-            raise ValueError(f"Unknown mission for nc dataset: {args.mission}. Options are: quad-easy, quad-medium, quad-hard")
-    elif args.dataset == "urban":
-        urban_data_dir = Path("/home/benb/data_byu/bags/urban")
-        if args.mission == "block0":
-            bag_file = urban_data_dir / "block0"
-            gt_file = urban_data_dir / "groundTruth" / "block0_gt" / "optimized_poses.txt"
-        elif args.mission == "block1":
-            bag_file = urban_data_dir / "block1"
-            gt_file = urban_data_dir / "groundTruth" / "block1_gt" / "optimized_poses.txt"
-        elif args.mission == "block2":
-            bag_file = urban_data_dir / "block2"
-            gt_file = urban_data_dir / "groundTruth" / "block2_gt" / "optimized_poses.txt"
+            raise ValueError("Need to specify a dataset")
+
+        if not bag_file.exists():
+            print(f"Bag file {bag_file} does not exist")
+        if not gt_file.exists():
+                print(f"Ground truth file {gt_file} does not exist")
+
+
+        if i == 0:
+            if args.load_session_dir is not None:
+                load_session_dir = Path(args.load_session_dir).absolute()
+            else:
+                load_session_dir = None
         else:
-            raise ValueError(f"Unknown mission for urban dataset: {args.mission}. Options are: block0, block1, block2")
-    elif args.dataset == "nclt":
-        nclt_data_dir = Path("/home/benb/data_sets/NCLT")
-        if args.mission == "1":
-            mission = "2012-01-08"
-            bag_file = nclt_data_dir / "2012-01-08/2012-01-08_bin_ros2"
-            gt_file = nclt_data_dir / "2012-01-08/groundtruth_2012-01-08.csv"
-        elif args.mission == '2':
-            nclt_data_dir = Path("/home/benb/data_sets/NCLT/nclt2ros/")
-            mission = "2012-01-08"
-            bag_file = nclt_data_dir / "rosbags/2012-01-08/ros2_bag/"
-            gt_file = nclt_data_dir / "raw_data/2012-01-08/ground_truth/groundtruth_2012-01-08.csv"
-        elif args.mission == '3':
-            nclt_data_dir = Path("/home/benb/data_sets/NCLT/nclt2ros/")
-            mission = "2012-01-15"
-            bag_file = nclt_data_dir / f"rosbags/{mission}/ros2_bag/"
-            gt_file = nclt_data_dir / f"raw_data/{mission}/ground_truth/groundtruth_{mission}.csv"
+            load_session_dir = copy.copy(save_session_dir)
+            args.save_session_dir = None
+        
+        if args.save_session_dir is not None:
+            save_session_dir = Path(args.save_session_dir).absolute()
+        elif load_session_dir is not None:
+            save_session_dir = load_session_dir.parent / f"{mission}__{load_session_dir.name}"
         else:
-            raise ValueError(f"Unknown mission for NCLT dataset: {args.mission}. Options are TODO: Add options")
+            if args.dataset and mission:
+                save_session_dir = moduleDir / "results" / args.dataset / priorUpdateMethodString / mission
+            else:
+                save_session_dir = moduleDir / "results/test_session"
+            while save_session_dir.exists():
+                print(f"Warning: save_session_dir already exists {save_session_dir}")
+                parts = str(save_session_dir).strip().rsplit('_', 1)
+                if len(parts) > 1 and parts[-1].isdigit():
+                    save_session_dir = f"{parts[0]}_{int(parts[1])+1}"
+                else:
+                    save_session_dir = f"{save_session_dir}_2"
+                save_session_dir = Path(save_session_dir)
 
 
-
-    if args.load_session_dir is not None:
-        load_session_dir = Path(args.load_session_dir).absolute()
-        fixedLagCurrentSession = True
-    else:
-        load_session_dir = None
-        fixedLagCurrentSession = False
-        # fixedLagCurrentSession = True # FIXME: This is a temporary fix to allow the test to run without a prior session. The correct behavior should be to set this to False when no prior session is loaded.
-    
-    if args.save_session_dir is not None:
-        save_session_dir = Path(args.save_session_dir).absolute()
-    elif load_session_dir is not None:
-        save_session_dir = load_session_dir.parent / f"{args.mission}_prior_{load_session_dir.name}"
-    else:
-        if args.dataset and mission:
-            save_session_dir = moduleDir / "results" / args.dataset / mission
+        # Resolve visualization flags: CLI --viz overrides module-level constants
+        if args.viz is None:
+            enable_mpl = ENABLE_MATPLOTLIB
+            # enable_mpl = False
+            enable_o3d = ENABLE_OPEN3D
+            # enable_o3d = False
         else:
-            save_session_dir = moduleDir / "results/test_session"
-        if save_session_dir.exists():
-            import shutil
-            shutil.rmtree(save_session_dir)
+            enable_mpl = args.viz in ("mpl", "both")
+            enable_o3d = args.viz in ("o3d", "both")
 
-    # Resolve visualization flags: CLI --viz overrides module-level constants
-    if args.viz is None:
-        enable_mpl = ENABLE_MATPLOTLIB
-        # enable_mpl = False
-        enable_o3d = ENABLE_OPEN3D
-        # enable_o3d = False
-    else:
-        enable_mpl = args.viz in ("mpl", "both")
-        enable_o3d = args.viz in ("o3d", "both")
+        policy = Params().policyType if args.policy is None else DecisionType[args.policy.upper()]
+        decisionTypes = [DecisionType[p.upper()] for p in args.evaluate_decision_types]
 
-    policy = Params().policyType if args.policy is None else DecisionType[args.policy.upper()]
+        if args.dataset.lower() == "nclt" and not load_session_dir:
+            maxCorrespondingDistance = 5.0
+        else:
+            maxCorrespondingDistance = 0.5
 
-    params = Params(
-        fixedLagCurrentSession=fixedLagCurrentSession,
-        policyType=policy,
-        rekeyPrior=True,
-        loadSessionDir=load_session_dir,
-        saveSessionDir=save_session_dir,
-        dataset=args.dataset.lower(),
-        mission=mission,
-        bagFile=bag_file,
-        gtFile=gt_file,
-    )
+        params = Params(
+            policyType=policy,
+            rekeyPrior=True,
+            loadSessionDir=load_session_dir,
+            saveSessionDir=save_session_dir,
+            dataset=args.dataset.lower(),
+            mission=mission,
+            bagFile=bag_file,
+            gtFile=gt_file,
+            priorUpdateMethod=priorUpdateMethod,
+            loopClosure=LoopClosure(
+                maxCorrespondenceDist=maxCorrespondingDistance
+            )
+        )
 
-    from dataclasses import asdict
-    from pprint import pprint
+        from dataclasses import asdict
+        from pprint import pprint
 
-    print("Running Multi-Session Test with the following parameters:")
-    pprint(asdict(params), sort_dicts=False)
-    print(f"Visualization: matplotlib={'on' if enable_mpl else 'off'}  open3d={'on' if enable_o3d else 'off'}")
+        print("Running Multi-Session Test with the following parameters:")
+        pprint(asdict(params), sort_dicts=False)
+        print(f"Visualization: matplotlib={'on' if enable_mpl else 'off'}  open3d={'on' if enable_o3d else 'off'}")
 
-    run_session(params, enable_matplotlib=enable_mpl, enable_open3d=enable_o3d, evaluate_decision_types=args.evaluate_decision_types)
+        run_session(params, 
+                    enable_matplotlib=enable_mpl, 
+                    enable_open3d=enable_o3d, 
+                    policy=policy, 
+                    evaluate_decision_types=decisionTypes,
+                    lastRun=True if i == len(args.missions) else False
+                    )
+
+
+if __name__ == "__main__":
+    main()

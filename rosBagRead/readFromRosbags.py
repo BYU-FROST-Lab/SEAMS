@@ -34,14 +34,21 @@ class ReadTopicsFromRosbag:
         '''
 
         self.lidar_topics = {
-            "/os_cloud_node/points",    # NC
+            "/os_cloud_node/points",    # NC - 2021
+            "/os1_cloud_node/points",   # NC - 2020
             "/ouster_top/points",       # BYU
             "/ouster/points",           # Ouster
             "/velodyne_points",         # NCLT
         }
 
+        self.gps_topics = {
+            "/navsat/fix",                      # NCLT
+            "/inertial_sense/gps1/NavSatFix",   # BYU
+        }
+
         self.valid_topics = {
-            *self.lidar_topics
+            *self.lidar_topics,
+            *self.gps_topics
         }
         
         self.buffer = JitterBuffer()
@@ -86,7 +93,29 @@ class ReadTopicsFromRosbag:
 
         return xyz_clean
 
+    def parse_gps_measurements(self, connection, msg):
+        '''
+        Return list[lat, lon, alt, cov, cov_type]
+        '''
+        if msg.status.status < 0:
+            return []
+        lat = msg.latitude
+        lon = msg.longitude
+        alt = msg.altitude
+        if not np.isfinite(alt):
+            return []
+        cov = np.asarray(msg.position_covariance).reshape(3, 3)
+        cov_type = msg.position_covariance_type
+
+        return [lat, lon, alt, cov, cov_type]
+
     def next_message(self):
+        '''
+        Return (topic, timestamp, msg_return)
+        msg_return:
+           lidar: xyz_points (Nx3)
+           gps: lat, long, alt, cov, cov_type as list of len 5 
+        '''
         # Determine total rosbag duration once
         if not hasattr(self, 'bag_duration') or self.bag_duration is None:
             self.get_bag_time_range()
@@ -131,7 +160,9 @@ class ReadTopicsFromRosbag:
                         timestamp = ready_msg.timestamp * 1e-9
                         msg = reader.deserialize(ready_msg.data, ready_msg.connection.msgtype)
                         if connection.topic in self.lidar_topics:
-                            xyz_points = self.parse_lidar_measurements(connection, msg)
+                            msg_return = self.parse_lidar_measurements(connection, msg)
+                        elif connection.topic in self.gps_topics:
+                            msg_return = self.parse_gps_measurements(connection, msg)
                         else:
                             continue
 
@@ -162,7 +193,10 @@ class ReadTopicsFromRosbag:
                             )
 
                             self.increment_counter += self.increment_counter_step
-                    yield connection.topic, timestamp, xyz_points
+                    # msg_return:
+                    #   xyz_points for lidar (Nx3)
+                    #   lat, long, alt, cov, cov_type as list of len 5
+                    yield connection.topic, timestamp, msg_return
                 if self.exit_flag:
                     break
 
@@ -171,10 +205,12 @@ class ReadTopicsFromRosbag:
             timestamp = final_msg.timestamp * 1e-9
             msg = reader.deserialize(final_msg.data, final_msg.connection.msgtype)
             if connection.topic in self.lidar_topics:
-                xyz_points = self.parse_lidar_measurements(connection, msg)
-                yield connection.topic, timestamp, xyz_points
+                msg_return = self.parse_lidar_measurements(connection, msg)
+            elif connection.topic in self.gps_topics:
+                msg_return = self.parse_gps_measurements(connection, msg)
             else:
                 continue
+            yield connection.topic, timestamp, msg_return
         
         return
 
@@ -228,13 +264,18 @@ def main():
     args = parser.parse_args()
 
 
-    mission = ReadTopicsFromRosbag("/home/benb/data_sets/NewerCollege/ros2/quad-easy")
+    mission = ReadTopicsFromRosbag("/home/benb/data_byu/bags/urban/block0/")
 
     from common.kissicp_odom import KissICPOdomLive
     kiss_odom = KissICPOdomLive(max_range=150.0)
     
-    for topic, timestamp, xyz_points in mission.next_message():
-        kiss_odom.process_next_keyframe(xyz_points)
+    for topic, timestamp, msg_return in mission.next_message():
+        if topic in mission.lidar_topics:
+            kiss_odom.process_next_keyframe(msg_return)
+        elif topic in mission.gps_topics:
+            print(f"{timestamp}: {msg_return}")
+        else:
+            continue
         pass
 
     points = []
