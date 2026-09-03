@@ -1106,6 +1106,23 @@ def saveOdomTUM(timestamps: dict[int, float], values: gtsam.Values, filename: st
                 ret = False
     return ret
 
+def loadOdomTUM(filename: str|Path) -> dict[float, gtsam.Pose3]:
+    '''
+    Load Odometry from TUM format and return a dict[timestamp, gtsam Pose3]
+    '''
+    filename = Path(filename)
+    odom_dict = {}
+    with open(filename, "r") as f:
+        for line in f:
+            timestamp_str, x_str, y_str, z_str, qx_str, qy_str, qz_str, qw_str = line.strip().split()
+            timestamp = float(timestamp_str)
+            pose = gtsam.Pose3(
+                gtsam.Rot3(float(qw_str), float(qx_str), float(qy_str), float(qz_str)),
+                np.array([float(x_str), float(y_str), float(z_str)])
+            )
+            odom_dict[timestamp] = pose
+    return odom_dict
+
 def saveTimestampsWithKeys(timestamp_dict: dict[int, float], filename: str|Path) -> bool:
     filename = Path(filename)
     if not timestamp_dict:
