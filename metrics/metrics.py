@@ -84,16 +84,16 @@ class Metrics:
             if self.params.inlierRMSEPolicy.debug:
                 print(f"Metrics: InlierRMSE = {self.lastInterInlierRMSE}, Len Correspondences = {num_correspondence_set}")
 
-        # if DecisionType.TWO_STEP_VALIDATION in self.method_:
-        #     self.gtsamGraph = cleanFactorGraph(isam)
-        #     self.gtsamValues = isam.calculateEstimate()
-        #     # Authors compute the Laplacian over the entire pose-graph
-        #     # (arXiv:2602.17226 §III-B), not a G-Loc-style local window.
-        #     self.CreateNXGraph()
+        if DecisionType.TWO_STEP_VALIDATION in self.method_:
+            self.gtsamGraph = cleanFactorGraph(isam)
+            self.gtsamValues = isam.calculateEstimate()
+            # Authors compute the Laplacian over the entire pose-graph
+            # (arXiv:2602.17226 §III-B), not a G-Loc-style local window.
+            self.CreateNXGraph()
 
-        #     startTime = time.time()
+            startTime = time.time()
 
-        #     self.ComputeDBar()
+            self.ComputeDBar()
 
         if DecisionType.RELATIVE_COVARIANCE in self.method_:
             # Get the relative covariance between the last pose (next one to be marginalized out) and the closest prior pose

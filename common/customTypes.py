@@ -38,7 +38,7 @@ class DecisionType(Enum):
     INLIER_RMSE = auto()
 
     # graph theoretic
-    # TWO_STEP_VALIDATION = auto()
+    TWO_STEP_VALIDATION = auto()
 
     # probablistic
     RELATIVE_COVARIANCE = auto()

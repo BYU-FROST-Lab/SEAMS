@@ -62,7 +62,7 @@ class WeightedPoseGraph:
             self.nx_graph.add_node(k, pose=p, theta=pose3.rotation().yaw()) # TODO: Make this 6D
         for i in range(gtsamGraph.size()):
             f = gtsamGraph.at(i)
-            if not (isinstance(f, gtsam.BetweenFactorPose3) or isinstance(f, gtsam.LinearContainerFactor)):
+            if not (isinstance(f, gtsam.BetweenFactorPose3) or isinstance(f, gtsam.LinearContainerFactor)) or len(f.keys()) != 2:
                 continue
             keys = f.keys()
             edge = (keys[0], keys[1])

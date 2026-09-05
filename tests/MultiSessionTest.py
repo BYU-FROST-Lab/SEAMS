@@ -87,6 +87,7 @@ def run_session(params: Params = Params(),
     show_o3d = enable_open3d
 
     ax = None
+    plt.close("all")
 
     #########################################################################################
     vizIndex=0
@@ -145,7 +146,6 @@ def run_session(params: Params = Params(),
     for i, c in enumerate(currentSession[0].priorSessionSymbols_):
         sessionSymbols[ord(c)] = f'C{i+1}'
 
-    plt.close("all")
     if show_mpl:
         # fig, ax = plt.subplots()
         fig, ax = plt.subplots(figsize=(10, 8))
@@ -525,28 +525,28 @@ def main():
     ########################################
 
     args.evaluate_decision_types = [
-        # "NONE",
-        # "DISTANCE",
-        # "OVERLAP",
-        # "INLIER_RATIO",
-        # "INLIER_RMSE",
-        # # # "TWO_STEP_VALIDATION",
-        # "RELATIVE_COVARIANCE",
+        "NONE",
+        "DISTANCE",
+        "OVERLAP",
+        "INLIER_RATIO",
+        "INLIER_RMSE",
+        # "TWO_STEP_VALIDATION",
+        "RELATIVE_COVARIANCE",
     ]   
     args.policy = "INLIER_RATIO"
     # args.viz = "none"
     args.prior_update_method = 0
 
-    args.dataset = "nc"
-    args.missions = [
+    # args.dataset = "nc"
+    # args.missions = [
         # "quad-easy",
         # "quad-medium",
         # "quad-hard",
         # "cloister",
-        "park",
-    ]
+    #     "park",
+    # ]
     # args.load_session_dir = moduleDir / "results/nc/post/quad-medium__quad-easy/"
-    args.load_session_dir = moduleDir / "results/nc/post/cloister__quad-hard__quad-medium__quad-easy"
+    # args.load_session_dir = moduleDir / "results/nc/post/cloister__quad-hard__quad-medium__quad-easy"
     # args.save_session_dir = moduleDir / "results/nc/post_session/quad-easy"
 
     # args.dataset = "urban"
@@ -559,16 +559,17 @@ def main():
     # args.load_session_dir = moduleDir / "policy_evaluation/urban2/block0"
     # args.viz = "none"
 
-    # args.dataset = "nclt"
-    # args.missions = [
+    args.dataset = "nclt"
+    args.missions = [
     #     # "2012-01-08",
     #     # "2012-01-15",
     #     "2012-01-22",
     #     "2012-04-29",
     #     "2012-05-11",
-    #     "2012-06-15",
-    # ]
-    # args.load_session_dir = moduleDir / "results/nclt/post/2012-01-22__2012-01-15__2012-01-08"
+        "2012-06-15",
+        "2013-02-23",
+    ]
+    args.load_session_dir = moduleDir / "results/nclt/post/2012-01-08"
     # args.save_session_dir = moduleDir / "results/nclt/1_nclt2ros"
 
     ########################################

@@ -68,10 +68,10 @@ if __name__ == "__main__":
             key = timestamps2keys[t]
             values.insert(key, p)
         
-        print("Plotting graph points...")
-        fgtools.plot_points(values.keys(), values, changeColorBySymbols=True)
+        # print("Plotting graph points...")
+        # fgtools.plot_points(values.keys(), values, changeColorBySymbols=True)
 
-        plt.pause(2)
+        # plt.pause(2)
 
         print("Creating point cloud...")
         globalPCD = fgtools.createGlobalPCD(pcds, values, voxel_size=None if args.voxel_size == 0.0 else args.voxel_size, changeColorBySymbols=True)
@@ -79,7 +79,7 @@ if __name__ == "__main__":
         o3d.visualization.draw_geometries([globalPCD])
 
         if savePointCloud:
-            pcdFile = sessionDir / "globalMapColored.pcd"
+            pcdFile = directory / "globalMapColored.pcd"
             print(f"Saving colored global map to {str(pcdFile)}")
             o3d.io.write_point_cloud(pcdFile, globalPCD)
         print("Done")

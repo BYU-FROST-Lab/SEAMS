@@ -61,8 +61,8 @@ class SessionManager:
             self.decider = InlierRatioPolicy(self.params)
         elif self.params.policyType == DecisionType.INLIER_RMSE:
             self.decider = InlierRMSEPolicy(self.params)
-        # elif self.params.policyType == DecisionType.TWO_STEP_VALIDATION:
-        #     self.decider = TwoStepConnectivityPolicy(self.params)
+        elif self.params.policyType == DecisionType.TWO_STEP_VALIDATION:
+            self.decider = TwoStepConnectivityPolicy(self.params)
         elif self.params.policyType == DecisionType.RELATIVE_COVARIANCE:
             self.decider = RelativeCovariancePolicy(self.params)
         else:

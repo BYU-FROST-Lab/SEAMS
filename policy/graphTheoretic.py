@@ -19,13 +19,12 @@ class TwoStepConnectivityPolicy(NodeDecisionPolicy):
        of the (frozen) localization baseline AND lambda_2 > 0.
     """
 
-    # Algebraic connectivity is identically 0 iff the graph is disconnected.
+    # Algebraic connectivity is identically 0 if the graph is disconnected.
     LAMBDA2_EPS = 1e-8
 
     def __init__(self, params: Params):
         super().__init__(params)
         self.d_bar_hist = []
-        self.lastState = NodeDecision.INITIALIZE
         self.debug = params.twoStepConnectivityPolicy.debug
         if params.twoStepConnectivityPolicy.showDLplot:
             _, self.ax = plt.subplots()
@@ -44,9 +43,19 @@ class TwoStepConnectivityPolicy(NodeDecisionPolicy):
         # Build the localization baseline before making any MAP/LOCALIZE decision.
         # Samples collected while mapping would pull mu down and collapse the test.
         if len(self.d_bar_hist) < window:
-            if current_state != NodeDecision.MAP:
-                self.d_bar_hist.append(d_bar)
-            return NodeDecision.INITIALIZE
+            # if current_state != NodeDecision.MAP:
+            self.d_bar_hist.append(d_bar)
+            # return NodeDecision.LOCALIZE
+            if self.previousState_ == NodeDecision.INITIALIZE:
+                lambda2 = metrics.ComputeFiedler()
+                if (lambda2 > self.LAMBDA2_EPS):
+                    self.previousState_ = NodeDecision.LOCALIZE
+                else:
+                    self.previousState_ = NodeDecision.MAP
+                if self.debug:
+                    print(f"TWO_STEP_VALIDATION - Starting in {self.previousState_.name} mode")
+            return self.previousState_
+
 
         mu = float(np.mean(self.d_bar_hist))
         sigma = float(np.std(self.d_bar_hist, ddof=1)) if len(self.d_bar_hist) > 1 else 0.0
@@ -75,8 +84,8 @@ class TwoStepConnectivityPolicy(NodeDecisionPolicy):
             if d_bar < lower_2:
                 if (not connected) or (d_bar < lower_4):
                     ret = NodeDecision.MAP
-            # if ret != NodeDecision.MAP:
-            if True: # TODO: Debugging.
+            if ret != NodeDecision.MAP:
+            # if True: # TODO: Debugging.
                 self.d_bar_hist.append(d_bar)
                 while len(self.d_bar_hist) > window:
                     self.d_bar_hist.pop(0)
@@ -92,9 +101,7 @@ class TwoStepConnectivityPolicy(NodeDecisionPolicy):
             plot_lambda = float(lambda2) if need_lambda else 0.0
             plot_d_and_lambda(d_bar, float(lower_2), plot_lambda, ax=self.ax)
 
-        self.previousState_ = current_state
-        self.lastState = ret
-        return NodeDecision.LOCALIZE # TODO: Remove this
+        # return NodeDecision.LOCALIZE # TODO: Remove this
         return ret
 
 
