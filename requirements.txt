@@ -14,3 +14,6 @@ cvxpy
 
 # Possibly needed. Still under test
 shapely
+
+# Used for error evaluations
+evo

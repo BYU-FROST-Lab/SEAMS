@@ -60,7 +60,7 @@ class TwoStepConnectivityPolicy(NodeDecisionPolicy):
         mu = float(np.mean(self.d_bar_hist))
         sigma = float(np.std(self.d_bar_hist, ddof=1)) if len(self.d_bar_hist) > 1 else 0.0
         # sigma = max(sigma, abs(mu) * cfg.minRelativeSigma, 1e-12)
-        sigma = max(sigma, cfg.minRelativeSigma, 1e-12)
+        # sigma = max(sigma, cfg.minRelativeSigma, 1e-12)
         lower_2 = mu - 2.0 * sigma
         lower_4 = mu - 4.0 * sigma
 

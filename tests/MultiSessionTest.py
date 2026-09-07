@@ -79,7 +79,7 @@ def run_session(params: Params = Params(),
     FIXED_WINDOW = False
     SAVE_FULL_SESSION = True
     SAME_SESSION_COV_CHANGE_PLOT = False
-    SAVE_COVARIANCE_OF_CURRENT_POSE = False
+    SAVE_COVARIANCE_OF_CURRENT_POSE = True
     SAVE_UPDATE_TIMING = False
     SHOW_PRIOR_VALUES = False
 
@@ -468,9 +468,11 @@ def run_session(params: Params = Params(),
     print("Done with session\n")
     
     if lastRun:
+        print("Close plots to exit")
         plt.show()
         pass
     else:
+        print("Only showing plots for 10 seconds")
         plt.pause(10)
 
 
@@ -524,30 +526,32 @@ def main():
     # Hardcode values for testing purposes #
     ########################################
 
-    args.evaluate_decision_types = [
-        "NONE",
-        "DISTANCE",
-        "OVERLAP",
-        "INLIER_RATIO",
-        "INLIER_RMSE",
-        # "TWO_STEP_VALIDATION",
-        "RELATIVE_COVARIANCE",
-    ]   
-    args.policy = "INLIER_RATIO"
+    # args.evaluate_decision_types = [
+    #     # "NONE",
+    #     "DISTANCE",
+    #     # "OVERLAP",
+    #     # "INLIER_RATIO",
+    #     # "INLIER_RMSE",
+    #     # # "TWO_STEP_VALIDATION",
+    #     # "RELATIVE_COVARIANCE",
+    # ]   
+    args.policy = "TWO_STEP_VALIDATION"
     # args.viz = "none"
     args.prior_update_method = 0
 
-    # args.dataset = "nc"
-    # args.missions = [
+    args.dataset = "nc"
+    args.missions = [
         # "quad-easy",
         # "quad-medium",
-        # "quad-hard",
+        "quad-hard",
         # "cloister",
-    #     "park",
-    # ]
+        # "park",
+    ]
     # args.load_session_dir = moduleDir / "results/nc/post/quad-medium__quad-easy/"
     # args.load_session_dir = moduleDir / "results/nc/post/cloister__quad-hard__quad-medium__quad-easy"
-    # args.save_session_dir = moduleDir / "results/nc/post_session/quad-easy"
+    args.load_session_dir = moduleDir / "results/nc/post/quad-easy"
+    args.save_session_dir = moduleDir / "results//nc/test/quad-hard__quad-easy"
+    # args.save_session_dir = moduleDir / "results/marginalizationEvaluation/nc/approx__quad-hard__quad-easy"
 
     # args.dataset = "urban"
     # args.mission = "block1"
@@ -559,18 +563,18 @@ def main():
     # args.load_session_dir = moduleDir / "policy_evaluation/urban2/block0"
     # args.viz = "none"
 
-    args.dataset = "nclt"
-    args.missions = [
-    #     # "2012-01-08",
-    #     # "2012-01-15",
-    #     "2012-01-22",
-    #     "2012-04-29",
-    #     "2012-05-11",
-        "2012-06-15",
-        "2013-02-23",
-    ]
-    args.load_session_dir = moduleDir / "results/nclt/post/2012-01-08"
-    # args.save_session_dir = moduleDir / "results/nclt/1_nclt2ros"
+    # args.dataset = "nclt"
+    # args.missions = [
+    # #     # "2012-01-08",
+    # #     # "2012-01-15",
+    # #     "2012-01-22",
+    # #     "2012-04-29",
+    # #     "2012-05-11",
+    #     "2012-06-15",
+    #     "2013-02-23",
+    # ]
+    # args.load_session_dir = moduleDir / "results/nclt/post/2012-01-08"
+    # # args.save_session_dir = moduleDir / "results/nclt/1_nclt2ros"
 
     ########################################
 
@@ -681,7 +685,7 @@ def main():
                     enable_open3d=enable_o3d, 
                     policy=policy, 
                     evaluate_decision_types=decisionTypes,
-                    lastRun=True if i == len(args.missions) else False
+                    lastRun=True if i == len(args.missions)-1 else False
                     )
 
 

@@ -15,10 +15,9 @@ class LoopClosure:
     distMax: int = 40
     skipFrames: int = 0
     intraNearKeyFrames: int = 5     # Same session
-    interNearKeyFramesPrior: int = 5     # >=0 Between session. Number of key frames on each side of the current pose to use for registration to the prior session.
+    interNearKeyFramesPrior: int = 10     # >=0 Between session. Number of key frames on each side of the current pose to use for registration to the prior session.
     interNearKeyFramesCurrent: int = 0     # >=0 Between session. Number of key frames to use in current window in addition to the current pose for registration to the prior session.
     voxelSize: float | None = 0.4
-    maxPossibleConnections: int = 1
     fitnessThreshold: float = 0.5
     rmseThreshold: float = 0.3
     maxCorrespondenceDist: float = 0.5
@@ -79,8 +78,9 @@ class Params:
     ##################################################################
 
     # Fixed Lag Smoother Params
-    fixedLagKeepFrames: int = 10
+    fixedLagKeepFrames: int = 30
     fixedLagMarg: FixedLagMarginalizationType = FixedLagMarginalizationType.APPROX_PRIOR
+    # fixedLagMarg: FixedLagMarginalizationType = FixedLagMarginalizationType.DENSE
     linearFactorMaxNodes: int = 2
 
     # Symbol values
