@@ -25,10 +25,11 @@ class TwoStepConnectivityPolicy(NodeDecisionPolicy):
     def __init__(self, params: Params):
         super().__init__(params)
         self.d_bar_hist = []
+        self.d_bar_hist_current = []
         self.debug = params.twoStepConnectivityPolicy.debug
         if params.twoStepConnectivityPolicy.showDLplot:
             _, self.ax = plt.subplots()
-
+            _, self.ax2 = plt.subplots()
         self.previousState_ = NodeDecision.INITIALIZE
 
     def DetermineDecisionState(self, metrics: Metrics) -> NodeDecision:
@@ -60,7 +61,7 @@ class TwoStepConnectivityPolicy(NodeDecisionPolicy):
         mu = float(np.mean(self.d_bar_hist))
         sigma = float(np.std(self.d_bar_hist, ddof=1)) if len(self.d_bar_hist) > 1 else 0.0
         # sigma = max(sigma, abs(mu) * cfg.minRelativeSigma, 1e-12)
-        # sigma = max(sigma, cfg.minRelativeSigma, 1e-12)
+        sigma = max(sigma, cfg.minRelativeSigma, 1e-12)
         lower_2 = mu - 2.0 * sigma
         lower_4 = mu - 4.0 * sigma
 
@@ -84,8 +85,8 @@ class TwoStepConnectivityPolicy(NodeDecisionPolicy):
             if d_bar < lower_2:
                 if (not connected) or (d_bar < lower_4):
                     ret = NodeDecision.MAP
-            if ret != NodeDecision.MAP:
-            # if True: # TODO: Debugging.
+            # if ret != NodeDecision.MAP:
+            if True: # TODO: Debugging.
                 self.d_bar_hist.append(d_bar)
                 while len(self.d_bar_hist) > window:
                     self.d_bar_hist.pop(0)
@@ -99,16 +100,28 @@ class TwoStepConnectivityPolicy(NodeDecisionPolicy):
 
         if cfg.showDLplot:
             plot_lambda = float(lambda2) if need_lambda else 0.0
-            plot_d_and_lambda(d_bar, float(lower_2), plot_lambda, ax=self.ax)
+            plot_d_and_lambda(d_bar, 
+                            #   float(lower_2), 
+                            #   float(lower_4), 
+                              float(2*sigma), 
+                              float(4*sigma), 
+                              plot_lambda, 
+                              ax=self.ax, 
+                              ax2=self.ax2, 
+                              graphWindowLength=cfg.graphWindowLength
+                              )
 
-        # return NodeDecision.LOCALIZE # TODO: Remove this
+        return NodeDecision.LOCALIZE # TODO: Remove this
         return ret
 
 
 def plot_d_and_lambda(d_hist: float|list[float],
                       d2_hist: float|list[float],
+                      d4_hist: float|list[float],
                       lambda_hist: float|list[float],
                       ax:Axes|None=None,
+                      ax2:Axes|None=None,
+                      graphWindowLength: int=15,
                       ) -> Axes:
     def _as_float_list(values: float|list[float]) -> list[float]:
         # Accept either one new sample or a batch of samples to append.
@@ -118,13 +131,17 @@ def plot_d_and_lambda(d_hist: float|list[float],
 
     if ax is None:
         fig, ax = plt.subplots()
+    
+    if ax2 is None:
+        fig2, ax2 = plt.subplots()
 
     state = getattr(ax, "_d_and_lambda_plot_state", None)
     if state is None:
         # Create the right-side axis once and keep both line artists for fast updates.
         lambda_ax = ax.twinx()
         d_line, = ax.plot([], [], color="tab:blue", label="d_hist")
-        d2_line, = ax.plot([], [], color="tab:green", label="d2_hist")
+        d2_line, = ax2.plot([], [], color="tab:green", label="d2_hist")
+        d4_line, = ax2.plot([], [], color="tab:orange", label="d4_hist")
         lambda_line, = lambda_ax.plot([], [], color="tab:red", label="lambda_hist")
 
         # Label and color each axis so the two scales are easy to read.
@@ -136,22 +153,28 @@ def plot_d_and_lambda(d_hist: float|list[float],
 
         state = {
             "d_ax": ax,
-            "d2_ax": ax,
+            "d2_ax": ax2,
+            "d4_ax": ax2,
             "lambda_ax": lambda_ax,
             "d_line": d_line,
             "d2_line": d2_line,
+            "d4_line": d4_line,
             "lambda_line": lambda_line,
             "d_x": [],
             "d_y": [],
             "d2_x": [],
             "d2_y": [],
+            "d4_x": [],
+            "d4_y": [],
             "lambda_x": [],
             "lambda_y": [],
         }
         setattr(ax, "_d_and_lambda_plot_state", state)
+        setattr(ax2, "_d_and_lambda_plot_state", state)
 
     d_values = _as_float_list(d_hist)
     d2_values = _as_float_list(d2_hist)
+    d4_values = _as_float_list(d4_hist)
     lambda_values = _as_float_list(lambda_hist)
 
     # Append only the new samples so repeated calls stay timely for live plotting.
@@ -159,9 +182,19 @@ def plot_d_and_lambda(d_hist: float|list[float],
     state["d_x"].extend(range(d_start, d_start + len(d_values)))
     state["d_y"].extend(d_values)
 
-    d2_start = len(state["d2_y"])
+    d2_start = int(state["d2_x"][-1]+1) if len(state["d2_x"]) > 0 else 0
     state["d2_x"].extend(range(d2_start, d2_start + len(d2_values)))
     state["d2_y"].extend(d2_values)
+    # if d2_start > graphWindowLength:
+    #     state["d2_x"] = state["d2_x"][-graphWindowLength:]
+    #     state["d2_y"] = state["d2_y"][-graphWindowLength:]
+
+    d4_start = int(state["d4_x"][-1]+1) if len(state["d4_x"]) > 0 else 0
+    state["d4_x"].extend(range(d4_start, d4_start + len(d4_values)))
+    state["d4_y"].extend(d4_values)
+    # if d4_start > graphWindowLength:
+    #     state["d4_x"] = state["d4_x"][-graphWindowLength:]
+    #     state["d4_y"] = state["d4_y"][-graphWindowLength:]
 
     lambda_start = len(state["lambda_y"])
     state["lambda_x"].extend(range(lambda_start, lambda_start + len(lambda_values)))
@@ -169,12 +202,16 @@ def plot_d_and_lambda(d_hist: float|list[float],
 
     state["d_line"].set_data(state["d_x"], state["d_y"])
     state["d2_line"].set_data(state["d2_x"], state["d2_y"])
+    state["d4_line"].set_data(state["d4_x"], state["d4_y"])
     state["lambda_line"].set_data(state["lambda_x"], state["lambda_y"])
 
     # Rescale the axes around the updated line data without recreating the plot.
     ax.relim()
     ax.autoscale_view()
+    ax2.relim()
+    ax2.autoscale_view()
     state["lambda_ax"].relim()
     state["lambda_ax"].autoscale_view()
     ax.figure.canvas.draw_idle()
+    ax2.figure.canvas.draw_idle()
     return ax

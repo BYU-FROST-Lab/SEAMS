@@ -24,6 +24,9 @@ class Metrics:
         self.d_bar = np.inf
         self.lambda2 = np.nan
 
+        # Persistent WeightedPoseGraph for incremental updates (TWO_STEP_VALIDATION)
+        self.wpg: WeightedPoseGraph | None = None
+
 
     def CalculateMetrics(self, 
                          isam: gtsam.ISAM2,
@@ -87,9 +90,10 @@ class Metrics:
         if DecisionType.TWO_STEP_VALIDATION in self.method_:
             self.gtsamGraph = cleanFactorGraph(isam)
             self.gtsamValues = isam.calculateEstimate()
-            # Authors compute the Laplacian over the entire pose-graph
-            # (arXiv:2602.17226 §III-B), not a G-Loc-style local window.
-            self.CreateNXGraph()
+            # Build/sync the graph incrementally over prior map + sliding window.
+            # currentKeys already contains prior keys followed by the recent window
+            # keys as assembled by SessionManager.UpdateDecisionState.
+            self.CreateNXGraph(keysToUse=currentKeys)
 
             startTime = time.time()
 
@@ -124,7 +128,15 @@ class Metrics:
         return priorTreeData.keys[i]
 
     def CreateNXGraph(self, keysToUse:list[int]=[]):
-        self.wpg = WeightedPoseGraph(self.gtsamGraph, self.gtsamValues, keysToUse=keysToUse)
+        """Incrementally sync self.wpg to cover exactly the supplied key list.
+
+        On the first call a new WeightedPoseGraph is created via update().
+        Subsequent calls reuse the existing graph, removing stale nodes and
+        adding new ones so Laplacian computations stay efficient.
+        """
+        if self.wpg is None:
+            self.wpg = WeightedPoseGraph(criteria=['t_opt', 'e_opt'])
+        self.wpg.update(self.gtsamGraph, self.gtsamValues, keysToUse)
 
     def ComputeDBar(self) -> float:
         """Weighted average node degree d-bar from the T-weighted Laplacian.

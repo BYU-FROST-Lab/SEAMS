@@ -57,43 +57,108 @@ class WeightedPoseGraph:
             gtsamGraph, gtsamValues = createSubGraph(gtsamGraph, gtsamValues, keysToUse)
 
         for k in gtsamValues.keys():
-            pose3 = gtsamValues.atPose3(k)
-            p = [pose3.x(), pose3.y()]
-            self.nx_graph.add_node(k, pose=p, theta=pose3.rotation().yaw()) # TODO: Make this 6D
+            self._add_node(k, gtsamValues)
         for i in range(gtsamGraph.size()):
             f = gtsamGraph.at(i)
-            if not (isinstance(f, gtsam.BetweenFactorPose3) or isinstance(f, gtsam.LinearContainerFactor)) or len(f.keys()) != 2:
-                continue
-            keys = f.keys()
-            edge = (keys[0], keys[1])
+            self._add_factor_edge(f)
 
-            # Paper 2602.17226 §III-B1 / Placed & Castellanos 2022: weight each
-            # pose-graph edge by a scalar of the Fisher information it encodes.
-            # T-opt uses the trace; E-opt uses the minimum eigenvalue.
-            if isinstance(f, gtsam.LinearContainerFactor):
-                info = f.toHessian().information()
-            else:
-                info = np.asarray(f.noiseModel().information(), dtype=float)
-            eigv = np.linalg.eigvalsh(info)
-            opt_cri_d = 0.0
-            opt_cri_t = 0.0
-            opt_cri_e = 0.0
-            if 'd_opt' in criteria:
-                eigv_pos = eigv[eigv > 1e-8]
-                n = info.shape[0]
-                opt_cri_d = float(np.exp(np.sum(np.log(eigv_pos)) / n)) if eigv_pos.size else 0.0
-            if 't_opt' in criteria:
-                opt_cri_t = float(np.trace(info))
-                # opt_cri_t = 1.0
-            if 'e_opt' in criteria:
-                opt_cri_e = float(max(eigv[0], 0.0))
+    # ------------------------------------------------------------------
+    # Private helpers for node/edge insertion
+    # ------------------------------------------------------------------
 
-            idx0 = gtsam.Symbol(keys[0]).index()
-            idx1 = gtsam.Symbol(keys[1]).index()
-            same_chr = gtsam.Symbol(keys[0]).chr() == gtsam.Symbol(keys[1]).chr()
-            etype = 0 if (same_chr and abs(idx0 - idx1) == 1) else 1
-            self.nx_graph.add_edge(*edge, type=etype, information=info.flatten(),
-                                    weight_d=opt_cri_d, weight_t=opt_cri_t, weight_e=opt_cri_e)
+    def _add_node(self, k: int, gtsamValues: gtsam.Values) -> None:
+        """Insert node k if it is not already in the graph."""
+        if self.nx_graph.has_node(k):
+            return
+        pose3 = gtsamValues.atPose3(k)
+        p = [pose3.x(), pose3.y()]
+        self.nx_graph.add_node(k, pose=p, theta=pose3.rotation().yaw())
+
+    def _compute_edge_weights(self, info: np.ndarray) -> tuple[float, float, float]:
+        """Return (weight_d, weight_t, weight_e) from a 6x6 information matrix."""
+        eigv = np.linalg.eigvalsh(info)
+        opt_cri_d = 0.0
+        opt_cri_t = 0.0
+        opt_cri_e = 0.0
+        if 'd_opt' in self.criteria:
+            eigv_pos = eigv[eigv > 1e-8]
+            n = info.shape[0]
+            opt_cri_d = float(np.exp(np.sum(np.log(eigv_pos)) / n)) if eigv_pos.size else 0.0
+        if 't_opt' in self.criteria:
+            opt_cri_t = float(np.trace(info))
+        if 'e_opt' in self.criteria:
+            opt_cri_e = float(max(eigv[0], 0.0))
+        return opt_cri_d, opt_cri_t, opt_cri_e
+
+    def _add_factor_edge(self, f) -> bool:
+        """
+        Add the edge for a 2-key BetweenFactorPose3 or LinearContainerFactor if
+        both endpoints are already nodes in the graph and the edge is new.
+        Returns True if an edge was added.
+        """
+        if not (isinstance(f, gtsam.BetweenFactorPose3) or isinstance(f, gtsam.LinearContainerFactor)):
+            return False
+        if len(f.keys()) != 2:
+            return False
+        keys = f.keys()
+        k0, k1 = keys[0], keys[1]
+        if not (self.nx_graph.has_node(k0) and self.nx_graph.has_node(k1)):
+            return False
+        if self.nx_graph.has_edge(k0, k1):
+            return False
+
+        # Paper 2602.17226 §III-B1 / Placed & Castellanos 2022: weight each
+        # pose-graph edge by a scalar of the Fisher information it encodes.
+        # T-opt uses the trace; E-opt uses the minimum eigenvalue.
+        if isinstance(f, gtsam.LinearContainerFactor):
+            info = f.toHessian().information()
+        else:
+            info = np.asarray(f.noiseModel().information(), dtype=float)
+        opt_cri_d, opt_cri_t, opt_cri_e = self._compute_edge_weights(info)
+
+        idx0 = gtsam.Symbol(k0).index()
+        idx1 = gtsam.Symbol(k1).index()
+        same_chr = gtsam.Symbol(k0).chr() == gtsam.Symbol(k1).chr()
+        etype = 0 if (same_chr and abs(idx0 - idx1) == 1) else 1
+        self.nx_graph.add_edge(k0, k1, type=etype, information=info.flatten(),
+                               weight_d=opt_cri_d, weight_t=opt_cri_t, weight_e=opt_cri_e)
+        return True
+
+    # ------------------------------------------------------------------
+    # Incremental update
+    # ------------------------------------------------------------------
+
+    def update(self,
+               gtsamGraph: gtsam.NonlinearFactorGraph,
+               gtsamValues: gtsam.Values,
+               keys_to_keep: list[int]) -> None:
+        """Incrementally sync this graph to the supplied key list.
+
+        Steps:
+        1. Remove NX nodes (and their incident edges) that are no longer in
+           keys_to_keep.
+        2. Add nodes present in keys_to_keep but missing from the NX graph
+           (in list order, so prior keys are added before window keys).
+        3. Scan the GTSAM factor graph and add any 2-key edges whose both
+           endpoints are now in the NX graph and that do not already exist.
+        """
+        keep_set = set(keys_to_keep)
+
+        # Step 1: remove stale nodes
+        stale = [k for k in list(self.nx_graph.nodes) if k not in keep_set]
+        if stale:
+            self.nx_graph.remove_nodes_from(stale)
+
+        # Step 2: add new nodes (preserving list order)
+        for k in keys_to_keep:
+            if not self.nx_graph.has_node(k) and gtsamValues.exists(k):
+                self._add_node(k, gtsamValues)
+
+        # Step 3: add missing edges
+        for i in range(gtsamGraph.size()):
+            f = gtsamGraph.at(i)
+            if f is not None:
+                self._add_factor_edge(f)
 
     def addEdge(self, id1, id2, t, I):
         A = [[I[0], I[1], I[2]],

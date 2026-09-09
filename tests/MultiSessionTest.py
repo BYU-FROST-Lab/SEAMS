@@ -75,11 +75,11 @@ def run_session(params: Params = Params(),
     #########################################################################################
 
     # MAX_COUNT = 200
-    MAX_COUNT = 5
+    MAX_COUNT = 20
     FIXED_WINDOW = False
     SAVE_FULL_SESSION = True
     SAME_SESSION_COV_CHANGE_PLOT = False
-    SAVE_COVARIANCE_OF_CURRENT_POSE = True
+    SAVE_COVARIANCE_OF_CURRENT_POSE = False
     SAVE_UPDATE_TIMING = False
     SHOW_PRIOR_VALUES = False
 
@@ -107,11 +107,12 @@ def run_session(params: Params = Params(),
                 if Path(tmpParams.loadSessionDir / dt.name).exists():
                     tmpParams.loadSessionDir = tmpParams.loadSessionDir / dt.name
             session = SessionManager(params=tmpParams)
-            try:
-                session.LoadSession(sharedScans=shared_pcds)
-            except Exception as e:
-                still_valid[idx] = False
-                print(f"Couldn't load session for {dt.name}.")
+            if params.loadSessionDir is not None:
+                try:
+                    session.LoadSession(sharedScans=shared_pcds)
+                except Exception as e:
+                    still_valid[idx] = False
+                    print(f"Couldn't load session for {dt.name}.")
             if params.dataset == 'nclt':
                 session.SetGpsReference(lat=42.293227, lon=-83.709657, alt=270)
 
@@ -347,6 +348,8 @@ def run_session(params: Params = Params(),
             updateTimes.append(update_time)
 
         # odom.update_last_pose(currentSession.values.atPose3(currentSession.values.keys()[-1]))
+        # if currentSession[0].currTimestamp_ == 730:
+        #     MAX_COUNT = 0
         if cnt >= MAX_COUNT: # or totalCnt > 225:
         # if True:
             cnt = 0
@@ -519,6 +522,13 @@ def main():
         help="Decision policy to use for the session. Options: DISTANCE, OVERLAP, INLIER_RATIO, INLIER_RMSE, TWO_STEP_VALIDATION, RELATIVE_COVARIANCE. "
              "This argument is ignored if --evaluate_decision_types is set.",
     )
+    parser.add_argument(
+        "-t",
+        "--transition_check",
+        action="store_true",
+        help="Used to make the boundary between localization and mapping well constrained."
+        "Checks the determinant of first and last mapping nodes."
+    )
     
     args = parser.parse_args()
 
@@ -527,31 +537,33 @@ def main():
     ########################################
 
     # args.evaluate_decision_types = [
-    #     # "NONE",
+    #     "NONE",
     #     "DISTANCE",
-    #     # "OVERLAP",
-    #     # "INLIER_RATIO",
-    #     # "INLIER_RMSE",
-    #     # # "TWO_STEP_VALIDATION",
-    #     # "RELATIVE_COVARIANCE",
+    #     "OVERLAP",
+    #     "INLIER_RATIO",
+    #     "INLIER_RMSE",
+    #     # "TWO_STEP_VALIDATION",
+    #     "RELATIVE_COVARIANCE",
     # ]   
-    args.policy = "TWO_STEP_VALIDATION"
+    args.policy = "RELATIVE_COVARIANCE"
     # args.viz = "none"
-    args.prior_update_method = 0
+    args.prior_update_method = 2 # 0: post, 2: continuous
+    args.transition_check = True
 
     args.dataset = "nc"
     args.missions = [
-        # "quad-easy",
-        # "quad-medium",
-        "quad-hard",
-        # "cloister",
-        # "park",
+    #     "quad-easy",
+    #     "quad-medium",
+    #     "quad-hard",
+    #     "cloister",
+        "park",
     ]
-    # args.load_session_dir = moduleDir / "results/nc/post/quad-medium__quad-easy/"
+    args.load_session_dir = moduleDir / "results/accuracyEval/nc/wellConstrained/continuous/cloister__quad-hard__quad-medium__quad-easy/"
     # args.load_session_dir = moduleDir / "results/nc/post/cloister__quad-hard__quad-medium__quad-easy"
-    args.load_session_dir = moduleDir / "results/nc/post/quad-easy"
-    args.save_session_dir = moduleDir / "results//nc/test/quad-hard__quad-easy"
+    # args.load_session_dir = moduleDir / "results/nc/post/quad-easy"
+    # args.save_session_dir = moduleDir / "results/nc/well_constrained/quad-medium__quad-easy"
     # args.save_session_dir = moduleDir / "results/marginalizationEvaluation/nc/approx__quad-hard__quad-easy"
+    # args.save_session_dir = moduleDir / "results/accuracyEval/nc/wellConstrained_continuous/quad-easy/"
 
     # args.dataset = "urban"
     # args.mission = "block1"
@@ -566,20 +578,23 @@ def main():
     # args.dataset = "nclt"
     # args.missions = [
     # #     # "2012-01-08",
-    # #     # "2012-01-15",
+    #     "2012-01-15",
     # #     "2012-01-22",
     # #     "2012-04-29",
     # #     "2012-05-11",
-    #     "2012-06-15",
-    #     "2013-02-23",
+    #     # "2012-06-15",
+    #     # "2013-02-23",
     # ]
     # args.load_session_dir = moduleDir / "results/nclt/post/2012-01-08"
-    # # args.save_session_dir = moduleDir / "results/nclt/1_nclt2ros"
+    # args.save_session_dir = moduleDir / "results/accuracyEval/nclt/wellConstrained/2012-01-15__2012-01-08"
+    # # # # args.save_session_dir = moduleDir / "results/nclt/1_nclt2ros"
 
     ########################################
 
     priorUpdateMethod = Params().priorUpdateMethod if not args.prior_update_method else args.prior_update_method
     priorUpdateMethodString = "post" if priorUpdateMethod == 0 else "incremental" if priorUpdateMethod == 1 else "continuous"
+    transitionBroundaryCheck = Params().enableTransitionInformationCheck if not args.transition_check else args.transition_check
+    transitionBroundaryTypeString = "wellConstrained" if transitionBroundaryCheck else "exact"
 
     i = 0
     for i, mission in enumerate(args.missions):
@@ -627,7 +642,7 @@ def main():
             save_session_dir = load_session_dir.parent / f"{mission}__{load_session_dir.name}"
         else:
             if args.dataset and mission:
-                save_session_dir = moduleDir / "results" / args.dataset / priorUpdateMethodString / mission
+                save_session_dir = moduleDir / "results" / args.dataset / transitionBroundaryTypeString / priorUpdateMethodString / mission
             else:
                 save_session_dir = moduleDir / "results/test_session"
             while save_session_dir.exists():
@@ -668,6 +683,7 @@ def main():
             bagFile=bag_file,
             gtFile=gt_file,
             priorUpdateMethod=priorUpdateMethod,
+            enableTransitionInformationCheck=transitionBroundaryCheck,
             loopClosure=LoopClosure(
                 maxCorrespondenceDist=maxCorrespondingDistance
             )

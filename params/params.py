@@ -15,8 +15,8 @@ class LoopClosure:
     distMax: int = 40
     skipFrames: int = 0
     intraNearKeyFrames: int = 5     # Same session
-    interNearKeyFramesPrior: int = 10     # >=0 Between session. Number of key frames on each side of the current pose to use for registration to the prior session.
     interNearKeyFramesCurrent: int = 0     # >=0 Between session. Number of key frames to use in current window in addition to the current pose for registration to the prior session.
+    interNearKeyFramesPrior: int = 10     # >=0 Between session. Number of key frames on each side of the current pose to use for registration to the prior session.
     voxelSize: float | None = 0.4
     fitnessThreshold: float = 0.5
     rmseThreshold: float = 0.3
@@ -54,10 +54,15 @@ class InlierRMSEPolicy:
 # Graph Theoretic
 @dataclass
 class TwoStepConnectivityPolicy:
-    movingAverageLength: int = 10
+    # Sliding window for the WeightedPoseGraph used to compute the Laplacian,
+    # d-bar, and lambda_2. Must be <= Params.fixedLagKeepFrames.
+    graphWindowLength: int = 15
+    # Sliding window for the d-bar mu/sigma moving-average history.
+    movingAverageLength: int = 5
     # Floor on sigma as a fraction of mu so a perfectly stable d-bar does not
     # treat every numerical wiggle as a 2/4-sigma drop (arXiv:2602.17226 §III-B2).
     minRelativeSigma: float = 0.01
+    maxConnections: int = 5 # maximum loop closure connections for two step validation
     showDLplot: bool = True
     debug: bool = True
 
@@ -92,6 +97,7 @@ class Params:
         
     # Decision params
     policyType: DecisionType = DecisionType.INLIER_RATIO
+    enableTransitionInformationCheck: bool = True
 
     # Current session params
     dataset: str = "nc"
@@ -103,7 +109,7 @@ class Params:
     # 0: Only add to prior at end of session
     # 1: add to prior when transitioning from mapping to localization 
     # 2: add to prior whenever in mapping mode
-    priorUpdateMethod: int = 0 
+    priorUpdateMethod: int = 2
 
     # Save session params
     moduleDir: Path = Path(__file__).parents[1]

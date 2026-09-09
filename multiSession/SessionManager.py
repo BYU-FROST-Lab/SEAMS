@@ -40,7 +40,18 @@ class SessionManager:
         self.graph_ = gtsam.NonlinearFactorGraph()
         self.values_ = gtsam.Values()
 
-        self.smoother_ = gtsam.IncrementalFixedLagSmoother(float(self.params.fixedLagKeepFrames))
+        # I have gotten weird errors where calculateEstimate() tries to find a value I've already removed and throws an error.
+        # I'm not sure why, but it works with these parameters.
+        self.isamParams_ = gtsam.ISAM2Params()
+        # if self.params.dataset == "nclt":
+        self.isamParams_.setRelinearizeThreshold(0.0) # Must be zero to work
+        self.isamParams_.relinearizeSkip = 1 # Must be small (<4) to work
+        self.isamParams_.findUnusedFactorSlots = True # Docs say to use this when doing fixedLagSmoother type things.
+        self.isamParams_.setFactorization("QR")
+            # self.isamParams_.evaluateNonlinearError = True
+        print(f"ISAM Params:\n{self.isamParams_}")
+    
+        self.smoother_ = gtsam.IncrementalFixedLagSmoother(float(self.params.fixedLagKeepFrames), self.isamParams_)
         self.currTimestamp_ = 0.0
         self.currentEstimate_ = gtsam.Values()
 
@@ -62,20 +73,29 @@ class SessionManager:
         elif self.params.policyType == DecisionType.INLIER_RMSE:
             self.decider = InlierRMSEPolicy(self.params)
         elif self.params.policyType == DecisionType.TWO_STEP_VALIDATION:
+            if self.params.twoStepConnectivityPolicy.graphWindowLength > self.params.fixedLagKeepFrames:
+                raise ValueError(
+                    f"TwoStepConnectivityPolicy.graphWindowLength ({self.params.twoStepConnectivityPolicy.graphWindowLength}) "
+                    f"must be <= Params.fixedLagKeepFrames ({self.params.fixedLagKeepFrames})"
+                )
             self.decider = TwoStepConnectivityPolicy(self.params)
         elif self.params.policyType == DecisionType.RELATIVE_COVARIANCE:
             self.decider = RelativeCovariancePolicy(self.params)
         else:
             raise ValueError(f"SessionManager: Invalid decision policy chosen. {self.params.policyType}")
         
-        self.metrics_ = Metrics(self.params.policyType)
+        self.metrics_ = Metrics(self.params.policyType, self.params)
         self.timeToCalcMetricsAndDecision_ = []
         self.timeToOptimize_ = []
 
         self.mappingStartKeys_: list[int] = []
         self.mappingEndKeys_: list[int] = []
-        self.mappingStartKeyDets_: dict[int, list] = {}
-        self.mappingEndKeyDets_: dict[int, list] = {}
+        self.covChangeStartKeys_: list[int] = []
+        self.covChangeEndKeys_: list[int] = []
+        self.covChangeStartKeyDets_: dict[int, list] = {}
+        self.covChangeEndKeyDets_: dict[int, list] = {}
+        self.covChangeStartKeyJitterBuffer_: dict[int, int] = {}
+        self.covChangeEndKeyJitterBuffer_: dict[int, int] = {}
         self.relCovStartKeys_: list[int] = []
 
         self.loopKeysToIgnore_: set[int]  = set()
@@ -86,7 +106,7 @@ class SessionManager:
         self.addToPriorSymbol_ = self.params.addToPriorSymbolChr
         self.priorSessionSymbols_ = self.params.priorSessionSymbolChrs
 
-        self.sessionKeys: dict[str, list[int]] = {}
+        self.sessionKeys: dict[str, list[int]] = {self.currentSessionSymbol_: []}
         self.lastOdomKey_ = 0
         # self.localWindowSubmap: tuple[o3d.geometry.PointCloud, int] = (o3d.geometry.PointCloud(), -1)
 
@@ -153,9 +173,12 @@ class SessionManager:
     def UpdateSmoother(self, reset:bool=False, 
                              newLag:float|None=None,
                              optimizationTimeList:list|None=None):
+        if self.currTimestamp_ > 1000:
+            old_graph = self.smoother_.getFactors()
+            old_values = self.smoother_.calculateEstimate()
         # Reset if needed
         if reset:
-            self.smoother_ = gtsam.IncrementalFixedLagSmoother(float(self.params.fixedLagKeepFrames))
+            self.smoother_ = gtsam.IncrementalFixedLagSmoother(float(self.params.fixedLagKeepFrames), self.isamParams_)
             self.currentEstimate_ = gtsam.Values()
         
         if newLag is not None:
@@ -212,9 +235,14 @@ class SessionManager:
 
             if isinstance(f, gtsam.LinearContainerFactor):
                 hf = f.toHessian()
-                keys = hf.keys()
+                if hf is not None:
+                    keys = hf.keys()
+                    aug_info = hf.augmentedInformation()
+                else:
+                    jf = f.toJacobian()
+                    keys = jf.keys()
+                    aug_info = jf.augmentedInformation()
 
-                aug_info = hf.augmentedInformation()
 
                 G = aug_info[:-1,:-1] # Information matrix portion
                 g = aug_info[:-1, -1] # Information vector portion
@@ -292,6 +320,13 @@ class SessionManager:
         previousState = copy(self.decisionState_)
         if self.interLoopTree_ is None:
             return False
+        if self.params.policyType == DecisionType.TWO_STEP_VALIDATION:
+            # Graph for Laplacian / d-bar / lambda_2: prior map keys first so
+            # they are inserted before the recent sliding-window keys.
+            connectivityKeys = list(self.priorValues_.keys()) + self.GetMostRecentKeys(self.params.twoStepConnectivityPolicy.graphWindowLength)
+        else:
+            connectivityKeys = self.sessionKeys[self.currentSessionSymbol_]
+
         metricTime = self.metrics_.CalculateMetrics(
             self.smoother_.getISAM2(), 
             self.currentEstimate_, 
@@ -300,7 +335,7 @@ class SessionManager:
             self.lastInterICPResult_,
             self.pcds_,
             self.decisionState_,
-            self.sessionKeys[self.currentSessionSymbol_] if self.currentSessionSymbol_ in self.sessionKeys else [],
+            connectivityKeys,
             self.closestSubmapData_,
             )
         startTime = time.time()
@@ -425,7 +460,10 @@ class SessionManager:
         
         return new_graph, new_values
     
-    def RenameKeysInPlace(self, charMap: dict[str, str], keys: list[int] = [], keepKeyIndex:bool=True, freezeNewNodes:bool=True):
+    def RenameKeysInPlace(self, charMap: dict[str, str], keys: list[int], keepKeyIndex:bool=True, freezeNewNodes:bool=True):
+
+        if len(keys) == 0:
+            return
         
         graph = self.smoother_.getFactors()
         timeMap = self.smoother_.timestamps()
@@ -434,11 +472,8 @@ class SessionManager:
         # Create key map and new Values object with rekeyed values
         keyMap: dict[int, int] = {}
         newValues = gtsam.Values()
-        if keys:
-            keysToCheck = keys
-        else:
-            keysToCheck = self.currentEstimate_.keys()
-        for k in keysToCheck:
+
+        for k in keys:
             s = gtsam.Symbol(k)
             old_chr = chr(s.chr())
 
@@ -450,7 +485,7 @@ class SessionManager:
                         raise ValueError(f"RenameKeysInPlace: key {gtsam.Symbol(newKey).string()} already exists")
                 else:
                     # Create new key with the new character and the next available index for that character
-                    if charMap[old_chr] not in self.sessionKeys:
+                    if  not len(self.sessionKeys[charMap[old_chr]]):
                         newKey = gtsam.Symbol(charMap[old_chr], 0).key()
                     else:
                         newKey = self.sessionKeys[charMap[old_chr]][-1] + 1
@@ -463,14 +498,11 @@ class SessionManager:
                 newValues.insert(newKey, self.currentEstimate_.atPose3(k))
 
                 # Remove old key from sessionKeys, pcds, and recent keys
-                if old_chr in self.sessionKeys:
-                    self.DecrementSize(k) # Remove old
-                    self.IncrementSize(newKey) # Add new
-                if k in self.pcds_:
-                    self.pcds_[newKey] = self.pcds_.pop(k)
-                    self.timestamps_[newKey] = self.timestamps_.pop(k)
-                if k in recentKeysQueue:
-                    recentKeysQueue[recentKeysQueue.index(k)] = newKey
+                self.DecrementSize(k) # Remove old
+                self.IncrementSize(newKey) # Add new
+                self.pcds_[newKey] = self.pcds_.pop(k)
+                self.timestamps_[newKey] = self.timestamps_.pop(k)
+                recentKeysQueue[recentKeysQueue.index(k)] = newKey
 
         self.recentKeysQueue_.clear()
         self.recentKeysQueue_.extend(recentKeysQueue)
@@ -485,8 +517,8 @@ class SessionManager:
                 continue
             
             # Check if any of the factor's keys are in the charMap, and if so, rekey the factor and add it to the new graph
-            for k in f.keys():
-                if (True if k in keys else chr(gtsam.Symbol(k).chr()) in charMap.keys()): # TODO: Verify that it works
+            for key in f.keys():
+                if key in keyMap.keys():
                     new_keys = [keyMap[k] if k in keyMap else k for k in f.keys()]
                     rekeyedFactors.add(f.rekey(new_keys))
                     factorIndicesToRemove.append(i)
@@ -494,10 +526,12 @@ class SessionManager:
 
         # Also need to unfreeze old nodes if frozen so that they will be marginalized out
         frozenKeys = self.smoother_.frozenKeys()
-        keysToUnfreeze = list(set(keyMap.keys()) - set(frozenKeys))
+        keysToUnfreeze = list(set(keyMap.keys()) & set(frozenKeys))
 
         if freezeNewNodes:
             keysToFreeze = list(keyMap.values())
+        else:
+            keysToFreeze = []
         
         # Update smoother with new graph and values, and remove old factors
         self.smoother_.update(rekeyedFactors, newValues, timeMap, factorIndicesToRemove, gtsam.KeySet(keysToFreeze), gtsam.KeySet(keysToUnfreeze))
@@ -557,6 +591,8 @@ class SessionManager:
                             relPose:gtsam.Pose3|None=None, 
                             newPointCloud:o3d.geometry.PointCloud=o3d.geometry.PointCloud()
                             ) -> int:
+        # if self.currTimestamp_ > 1355  and self.currTimestamp_ < 1360: # exception occured during update smoother at 1359
+        #     pass
         if self.currentEstimate_.empty():
             raise RuntimeError(f"Values is empty. Must add a prior value before adding odometry factor")
         
@@ -569,13 +605,17 @@ class SessionManager:
         elif relPose is None and pose is not None:
             poseFrom = self.currentEstimate_.atPose3(self.lastOdomKey_)
             relPose = poseFrom.between(pose)
-        
+        previousDecisionState = copy(self.decisionState_)
         decisionStateChanged = self.UpdateDecisionState()
 
         # Assumed first node was localization, it the first decision is map, change the first node
-        if len(self.recentKeysQueue_) == 1 and self.decisionState_ == NodeDecision.MAP:
+        if len(self.recentKeysQueue_) == 1 and self.decisionState_ != previousDecisionState:
             assert self.currTimestamp_ == 1, "Changing prior. Timestamp should be 1.0"
-            self.RenameKeysInPlace({self.currentSessionSymbol_: self.addToPriorSymbol_}, [self.recentKeysQueue_[0]])
+            self.RenameKeysInPlace(
+                {self.currentSessionSymbol_: self.addToPriorSymbol_} if self.decisionState_ == NodeDecision.MAP 
+                else {self.addToPriorSymbol_: self.currentSessionSymbol_}, 
+                [self.recentKeysQueue_[0]]
+                )
             # decisionStateChanged = False
         # if self.initialFactorInfo_:
         #     symbol = self.addToPriorSymbol_ if self.decisionState_ == NodeDecision.MAP else self.currentSessionSymbol_
@@ -614,7 +654,7 @@ class SessionManager:
         deletedKeys = result.getKeysOfDeletedNodes()
         if deletedKeys:
             for k in deletedKeys:
-                self.sessionKeys[chr(gtsam.Symbol(k).chr())].remove(k)
+                self.DecrementSize(k)
                 self.pcds_.pop(k)
                 self.timestamps_.pop(k)
                 if k in self.currentToPriorAnchors_:
@@ -623,14 +663,21 @@ class SessionManager:
         if self.params.fixedLagMarg == FixedLagMarginalizationType.APPROX_PRIOR:
             self.ApproximateLinearFactor(result.getMarginalFactorIndices(), self.params.linearFactorMaxNodes)
         
-        if decisionStateChanged:
+        if decisionStateChanged and len(self.recentKeysQueue_) > 1:
             if self.decisionState_ == NodeDecision.MAP:
-                self.mappingStartKeys_.append(newKey)
-                if self.params.policyType == DecisionType.RELATIVE_COVARIANCE:
-                    self.relCovStartKeys_.append(newKey)
+                if self.IsCurrentSessionKey(self.lastOdomKey_):
+                    self.mappingStartKeys_.append(newKey)
+                    self.covChangeStartKeys_.append(newKey)
+                    if self.params.policyType == DecisionType.RELATIVE_COVARIANCE:
+                        self.relCovStartKeys_.append(newKey)
             else:
-                assert self.IsAddToPriorSessionKey(self.lastOdomKey_), f"Expected lastOdomKey_ to be an addToPriorSessionKey but is actually {gtsam.Symbol(self.lastOdomKey_).string()}"
-                self.mappingEndKeys_.append(self.lastOdomKey_)
+                if self.IsAddToPriorSessionKey(self.lastOdomKey_):
+                    if self.lastOdomKey_ in self.mappingStartKeys_: # Only one node in mapping because it's the beginning and end
+                        self.mappingStartKeys_.remove(self.lastOdomKey_)
+                        self.RenameKeysInPlace({self.addToPriorSymbol_: self.currentSessionSymbol_}, [self.lastOdomKey_], freezeNewNodes=False)
+                    else:
+                        self.mappingEndKeys_.append(self.lastOdomKey_)
+                        self.covChangeEndKeys_.append(self.lastOdomKey_)
         self.recentKeysQueue_.append(newKey)
         self.lastOdomKey_ = newKey
 
@@ -737,7 +784,6 @@ class SessionManager:
             print(f"Warning: Timestamps keys do not match point cloud keys.")
     
     def UpdatePriorTree(self, calcRecentKeysToIgnore:bool=True):
-        # 
         if self.addToPriorSymbol_ in self.sessionKeys:
             if self.params.priorUpdateMethod == 2:
                 self.loopKeysToIgnore_ = set(self.recentKeysQueue_) & set(self.sessionKeys[self.addToPriorSymbol_])
@@ -747,10 +793,11 @@ class SessionManager:
             if self.mappingStartKeys_ and self.params.priorUpdateMethod == 1:
                 keysInCurrentMapping = [k for k in self.loopKeysToIgnore_ if k >= self.mappingStartKeys_[-1]]
                 self.loopKeysToIgnore_ -= set(keysInCurrentMapping)
-        if calcRecentKeysToIgnore:
-            potentialKeysToIgnore = set(self.sessionKeys[self.addToPriorSymbol_]) if self.addToPriorSymbol_ in self.sessionKeys else set()
-            keysAlreadyInPrior = set(self.interLoopTree_.keys) if self.interLoopTree_ else set()
-            self.loopKeysToIgnore_ |= potentialKeysToIgnore - keysAlreadyInPrior
+
+            if calcRecentKeysToIgnore:
+                potentialKeysToIgnore = set(self.sessionKeys[self.addToPriorSymbol_])
+                keysAlreadyInPrior = set(self.interLoopTree_.keys) if self.interLoopTree_ else set()
+                self.loopKeysToIgnore_ |= potentialKeysToIgnore - keysAlreadyInPrior
         points, keys = fgtools.GetPointsFromGraphEstimate(self.currentEstimate_, 
                                                           symbolChr=self.currentSessionSymbol_, 
                                                           allOthers=True, 
@@ -795,7 +842,7 @@ class SessionManager:
                     self.UpdatePriorTree(calcRecentKeysToIgnore=False)
                 elif len(self.loopKeysToIgnore_) and self.params.priorUpdateMethod == 1:
                     self.UpdatePriorTree(calcRecentKeysToIgnore=False)
-            elif len(self.loopKeysToIgnore_) and self.params.priorUpdateMethod == 1:
+            elif len(self.loopKeysToIgnore_):# and self.params.priorUpdateMethod == 1:
                 self.UpdatePriorTree(calcRecentKeysToIgnore=False)
 
 
@@ -822,8 +869,12 @@ class SessionManager:
         numInterLoops = 0
         if inter and self.interLoopTree_:
 
-            distances, indices = self.interLoopTree_.tree.query(currPose.translation(), 
-                                                                k=self.params.loopClosure.interNearKeyFramesPrior) 
+            if self.params.policyType == DecisionType.TWO_STEP_VALIDATION:
+                distances, indices = self.interLoopTree_.tree.query(currPose.translation(), 
+                                                                    k=self.params.twoStepConnectivityPolicy.maxConnections)
+            else:
+                distances, indices = self.interLoopTree_.tree.query(currPose.translation(), 
+                                                                    k=self.params.loopClosure.interNearKeyFramesPrior) 
             # distances, indices = self.interLoopTree_.tree.query(pose.translation()) # Look for the 5 closest poses given the distance is less than 30
             keys = deepcopy(self.interLoopTree_.keys)
 
@@ -836,18 +887,30 @@ class SessionManager:
             self.closestSubmapData_.currCenterPoint = self.currentEstimate_.atPose3(self.lastOdomKey_).translation()
             self.closestSubmapData_.currKey = copy(self.lastOdomKey_)
 
-            # for i, k in enumerate(keysToSearch):
-                # ret = self.LoopCheckGivenKey(k, addFactor=True, numNearKeyFrames=self.params.icp.nearKeyFrames)
-            foundInterLoop, reg = self.LoopCheckGivenKey(keysToSearch, 
-                                                        addFactor=True, 
-                                                        numNearSourceKeyFrames=self.params.loopClosure.interNearKeyFramesCurrent, 
-                                                        setSubmap=True, 
-                                                        isInter=True
-                                                        )
-            if foundInterLoop:
-                numInterLoops += 1
-                
-            self.lastInterICPResult_ = reg
+            if self.params.policyType == DecisionType.TWO_STEP_VALIDATION:
+                for i, k in enumerate(keysToSearch):
+                    foundInterLoop, reg = self.LoopCheckGivenKey([k], 
+                                                                 addFactor=True, 
+                                                                 numNearSourceKeyFrames=self.params.loopClosure.interNearKeyFramesCurrent, 
+                                                                 numNearTargetKeyFrames=self.params.loopClosure.interNearKeyFramesPrior, 
+                                                                 setSubmap=True if i == 0 else False, 
+                                                                 isInter=True
+                                                                 )
+                    if foundInterLoop:
+                        numInterLoops += 1
+                    if i == 0:
+                        self.lastInterICPResult_ = reg
+            else:
+                foundInterLoop, reg = self.LoopCheckGivenKey(keysToSearch, 
+                                                            addFactor=True, 
+                                                            numNearSourceKeyFrames=self.params.loopClosure.interNearKeyFramesCurrent, 
+                                                            setSubmap=True, 
+                                                            isInter=True
+                                                            )
+                if foundInterLoop:
+                    numInterLoops += 1
+                self.lastInterICPResult_ = reg
+
         if numIntraLoops > 0 or numInterLoops > 0:
             self.UpdateSmoother()
         return numIntraLoops, numInterLoops
@@ -855,6 +918,7 @@ class SessionManager:
     def LoopCheckGivenKey(self, keys: list[int], 
                           addFactor:bool=True, 
                           numNearSourceKeyFrames: int = 0, 
+                          numNearTargetKeyFrames: int = 5, 
                           setSubmap: bool = False,
                           isInter: bool = False
                           ) -> tuple[bool, o3d.pipelines.registration.RegistrationResult]:
@@ -867,8 +931,10 @@ class SessionManager:
 
         pcSource = self.FindRecentKeyFrames(numNearSourceKeyFrames)
         # pcSource = self.FindRecentKeyFrames(1)
-        # pcTarget = self.FindSequentialKeyFrames(keys[0], numNearTargetKeyFrames)
-        pcTarget = self.GetSubmapFromKeys(keys)
+        if len(keys) == 1:
+            pcTarget = self.FindSequentialKeyFrames(keys[0], numNearTargetKeyFrames)
+        else:
+            pcTarget = self.GetSubmapFromKeys(keys)
 
         if self.currentEstimate_.exists(keys[0]):
             poseTarget = self.currentEstimate_.atPose3(keys[0])
@@ -995,7 +1061,7 @@ class SessionManager:
             if symbolChr in self.sessionKeys:
                 return len(self.sessionKeys[symbolChr])
             else:
-                return 0
+                return -1
         else:
             totalSize = 0
             for v in self.sessionKeys.values():
@@ -1030,8 +1096,8 @@ class SessionManager:
                 char = ''
             if char in self.sessionKeys:
                 self.sessionKeys[char].remove(key)
-                if len(self.sessionKeys[char]) == 0:
-                    self.sessionKeys.pop(char)
+                # if len(self.sessionKeys[char]) == 0:
+                #     self.sessionKeys.pop(char)
             else:
                 raise ValueError(f"DecrementSize: Key {gtsam.Symbol(key).string()} not found in sessionKeys")
     
@@ -1122,6 +1188,7 @@ class SessionManager:
 
             return self.GetSessionInfo()
         else:
+            self.CheckDeterminants(flush=True)
             return self.GetSessionInfo(excludeSymbols=[self.currentSessionSymbol_])
  
         
@@ -1153,7 +1220,7 @@ class SessionManager:
         if directory is None:
             directory = self.params.saveSessionDir
         
-        if self.params.loadSessionDir:
+        if self.params.loadSessionDir or self.params.priorUpdateMethod == 2:
             directory = Path(directory) / self.params.policyType.name
         else:
             directory = Path(directory)
@@ -1274,7 +1341,6 @@ class SessionManager:
             self.addToPriorSymbol_ = chr(ord(list(self.priorSessionSymbols_)[-1]) + 1)
         else:
             raise RuntimeError("LoadSession: sharedScanSymbols is empty.")
-            self.addToPriorSymbol_ = 'A'
 
         valuesKeys = set(self.priorValues_.keys())
         if valuesKeys != set(self.pcds_.keys()) or valuesKeys != set(self.timestamps_.keys()):
@@ -1288,7 +1354,8 @@ class SessionManager:
                 self.priorGraph_, self.priorValues_ = self.RenameKeys(chars=self.params.priorSessionSymbolChrs,
                                                                       autoRename=self.params.autoRename,
                                                                       updateOptimization=False)
-
+        # self.sessionKeys[self.currentSessionSymbol_] = []
+        # self.sessionKeys[self.addToPriorSymbol_] = []
         self.UpdateSmoother(reset=True)
         self.UpdatePriorTree()
         # self.UpdatePriorKeyToFactorIndexDict()
@@ -1310,6 +1377,8 @@ class SessionManager:
         Assumes pose is being added to last value in graph
         '''
         print(f"\nTime: {self.currTimestamp_}")
+        if self.currTimestamp_ >= 114:
+            pass
 
         result = self.UpdateResult()
         if isinstance(pose, np.ndarray):
@@ -1334,35 +1403,35 @@ class SessionManager:
             self.loopCnt_ = 0
             result.numIntraLoops, result.numInterLoops = self.CheckLoopClosures()
 
-        # May need to rekey tail of window if in relative covariance mode
-        if self.params.policyType == DecisionType.RELATIVE_COVARIANCE and self.relCovStartKeys_:
-            if self.sessionKeys[self.currentSessionSymbol_]:
-                relCovStartKeyIdex = gtsam.Symbol(self.relCovStartKeys_[0]).index()
-                lastCurrKey = self.sessionKeys[self.currentSessionSymbol_][0]
-                if gtsam.Symbol(lastCurrKey).index() < relCovStartKeyIdex:
-                    if not self.interLoopTree_:
-                        raise ValueError("Update: interloopTree is None")
-                    _, index = self.interLoopTree_.tree.query(self.currentEstimate_.atPose3(lastCurrKey).translation())
-                    closestPriorKey = self.interLoopTree_.keys[index]
-                    jointCov = self.smoother_.getISAM2().jointMarginalCovariance([lastCurrKey, closestPriorKey]).fullMatrix()
-                    logDet = np.log(np.linalg.det(fgtools.getRelativeCov(self.currentEstimate_.atPose3(lastCurrKey), self.currentEstimate_.atPose3(closestPriorKey), jointCov)))
-                    if logDet > self.params.relativeCovariancePolicy.logDetThreshold:
-                        # Rekey tail of window
-                        keysToRekey = []
-                        for k in self.sessionKeys[self.currentSessionSymbol_]:
-                            if gtsam.Symbol(k).index() >= relCovStartKeyIdex:
-                                break
-                            keysToRekey.append(k)
-                        self.RenameKeysInPlace({self.currentSessionSymbol_: self.addToPriorSymbol_}, keysToRekey)
-                        self.relCovStartKeys_.pop(0)
-                else:
-                    self.relCovStartKeys_.pop(0)
+        # # May need to rekey tail of window if in relative covariance mode
+        # if self.params.policyType == DecisionType.RELATIVE_COVARIANCE and self.relCovStartKeys_:
+        #     if self.sessionKeys[self.currentSessionSymbol_]:
+        #         relCovStartKeyIdex = gtsam.Symbol(self.relCovStartKeys_[0]).index()
+        #         lastCurrKey = self.sessionKeys[self.currentSessionSymbol_][0]
+        #         if gtsam.Symbol(lastCurrKey).index() < relCovStartKeyIdex:
+        #             if not self.interLoopTree_:
+        #                 raise ValueError("Update: interloopTree is None")
+        #             _, index = self.interLoopTree_.tree.query(self.currentEstimate_.atPose3(lastCurrKey).translation())
+        #             closestPriorKey = self.interLoopTree_.keys[index]
+        #             jointCov = self.smoother_.getISAM2().jointMarginalCovariance([lastCurrKey, closestPriorKey]).fullMatrix()
+        #             logDet = np.log(np.linalg.det(fgtools.getRelativeCov(self.currentEstimate_.atPose3(lastCurrKey), self.currentEstimate_.atPose3(closestPriorKey), jointCov)))
+        #             if logDet > self.params.relativeCovariancePolicy.logDetThreshold:
+        #                 # Rekey tail of window
+        #                 keysToRekey = []
+        #                 for k in self.sessionKeys[self.currentSessionSymbol_]:
+        #                     if gtsam.Symbol(k).index() >= relCovStartKeyIdex:
+        #                         break
+        #                     keysToRekey.append(k)
+        #                 self.RenameKeysInPlace({self.currentSessionSymbol_: self.addToPriorSymbol_}, keysToRekey)
+        #                 self.relCovStartKeys_.pop(0)
+        #         else:
+        #             self.relCovStartKeys_.pop(0)
 
-            else:
-                self.relCovStartKeys_.pop(0)
+        #     else:
+        #         self.relCovStartKeys_.pop(0)
 
-
-        # self.CheckDeterminants()
+        if self.params.enableTransitionInformationCheck:
+            self.CheckDeterminants()
         self.currTimestamp_ += 1
 
         return result
@@ -1370,21 +1439,24 @@ class SessionManager:
     def Initialize(self, pointCloud: o3d.geometry.PointCloud, pose: gtsam.Pose3, timestamp: float):
         print("Initializing...")
 
+        self.sessionKeys[self.addToPriorSymbol_] = []
+
         self.decisionState_ = NodeDecision.MAP
 
         # Scan match against prior map if one exists
-        # if self.priorGraph_.size() != 0 and self.interLoopTree_:
-        #     dist, idx = self.interLoopTree_.tree.query(pose.translation())
-        #     nearestPriorKey = self.interLoopTree_.keys[idx]
-        #     submap = self.FindSequentialKeyFrames(nearestPriorKey, 10)
-        #     reg = fgtools.ScanMatch(pointCloud, submap, pose.matrix(), maxCorrespondenceDist=5.0, showResult=0, returnTightEval=True)
-        #     if reg.fitness > self.params.loopClosure.fitnessThreshold:
-        #         pose = gtsam.Pose3(reg.transformation)
-        #         self.decisionState_ = NodeDecision.LOCALIZE
-        #     else:
-        #         print("\n****************************************************************************************")
-        #         print("   Warning! Could not initialize with scan matching. Please check if this is correct!")
-        #         print("****************************************************************************************\n")
+        if self.priorGraph_.size() != 0 and self.interLoopTree_:
+            dist, idx = self.interLoopTree_.tree.query(pose.translation())
+            nearestPriorKey = self.interLoopTree_.keys[idx]
+            submap = self.FindSequentialKeyFrames(nearestPriorKey, 10)
+            reg = fgtools.ScanMatch(pointCloud, submap, pose.matrix(), maxCorrespondenceDist=5.0, showResult=0, returnTightEval=True)
+            if reg.fitness > self.params.loopClosure.fitnessThreshold:
+                pose = gtsam.Pose3(reg.transformation)
+                self.decisionState_ = NodeDecision.LOCALIZE
+            else:
+                print("\n****************************************************************************************")
+                print("   Warning! Could not initialize with scan matching. Please check if this is correct!")
+                print("****************************************************************************************\n")
+
 
         if self.priorGraph_.size() != 0:
             noise = gtsam.noiseModel.Diagonal.Variances(np.array([np.pi**2, np.pi**2, np.pi**2, 10, 10, 10]))
@@ -1394,60 +1466,116 @@ class SessionManager:
         self.AddPrior(key, pose, noise)
         self.AddPointCloud(key, pointCloud, timestamp=timestamp)
 
+        # print(f"Initialized to {self.params.policyType.name} - {self.decisionState_.name}")
+
         return key
 
-    def CheckDeterminants(self):
+    def CheckDeterminants(self, flush: bool = False):
 
-        # Single Session traverse same area or multi-session rejoin prior map
-        if self.intraLoopKeys_:
-            start = time.time()
-            firstKey = self.intraLoopKeys_[0]
-            # If the new nodes are still forming loop closures, see if they are redundant
-            if self.intraLoopKeys_[-1] == self.lastOdomKey_:
-                self.intraLoopReset_ = 0
-                self.intraLoopDets_.append(np.linalg.det(self.smoother_.marginalCovariance(firstKey)))
+        # # Single Session traverse same area or multi-session rejoin prior map
+        # if self.intraLoopKeys_:
+        #     start = time.time()
+        #     firstKey = self.intraLoopKeys_[0]
+        #     # If the new nodes are still forming loop closures, see if they are redundant
+        #     if self.intraLoopKeys_[-1] == self.lastOdomKey_:
+        #         self.intraLoopReset_ = 0
+        #         self.intraLoopDets_.append(np.linalg.det(self.smoother_.marginalCovariance(firstKey)))
 
-                if len(self.intraLoopDets_) >= 2:
-                    pctChange = (self.intraLoopDets_[-2] - self.intraLoopDets_[-1]) / self.intraLoopDets_[-2]
-                    print(f"Percent change determinant for key {gtsam.Symbol(firstKey).string()} is {pctChange*100:.2f}%")
+        #         if len(self.intraLoopDets_) >= 2:
+        #             pctChange = (self.intraLoopDets_[-2] - self.intraLoopDets_[-1]) / self.intraLoopDets_[-2]
+        #             print(f"Percent change determinant for key {gtsam.Symbol(firstKey).string()} is {pctChange*100:.2f}%")
 
-                    if abs(pctChange) < 0.05:
-                        self.ResetMode(NodeDecision.MAP)
-                        print("Setting Mode to Localization")
-                        self.decisionState_ = NodeDecision.LOCALIZE
-                        # self.UpdatePriorTree()
-            # Reset the intra loop keys if the new nodes aren't being loop closed.
-            else:
-                self.intraLoopReset_ += 1
-                if self.intraLoopReset_ > 5:
-                    self.ResetMode(NodeDecision.MAP)
-            print(f"Time to calculate dets {time.time() - start}")
+        #             if abs(pctChange) < 0.05:
+        #                 self.ResetMode(NodeDecision.MAP)
+        #                 print("Setting Mode to Localization")
+        #                 self.decisionState_ = NodeDecision.LOCALIZE
+        #                 # self.UpdatePriorTree()
+        #     # Reset the intra loop keys if the new nodes aren't being loop closed.
+        #     else:
+        #         self.intraLoopReset_ += 1
+        #         if self.intraLoopReset_ > 5:
+        #             self.ResetMode(NodeDecision.MAP)
+        #     print(f"Time to calculate dets {time.time() - start}")
 
         slidingWindowKeys = self.GetMostRecentKeys(self.params.fixedLagKeepFrames + 1)
         # Leave localization and enter mapping
-        for k in self.mappingStartKeys_:
-            if k not in slidingWindowKeys:
-                self.mappingStartKeys_.remove(k)
-                self.mappingStartKeyDets_.pop(k)
+        for k in self.covChangeStartKeys_:
+            if k not in slidingWindowKeys or gtsam.Symbol(self.currentSessionSymbol_, gtsam.Symbol(k).index()).key()-1 not in self.sessionKeys[self.currentSessionSymbol_]:
+                self.covChangeStartKeys_.remove(k)
+                self.covChangeStartKeyDets_.pop(k)
+                if k in self.covChangeStartKeyJitterBuffer_:
+                    self.covChangeStartKeyJitterBuffer_.pop(k)
                 continue
+            elif k not in self.covChangeStartKeyJitterBuffer_:
+                self.covChangeStartKeyJitterBuffer_[k] = 0
             
-            fgtools.AddValueToDictList(self.mappingStartKeyDets_, k, np.linalg.det(self.smoother_.marginalCovariance(k)))
+            fgtools.AddValueToDictList(self.covChangeStartKeyDets_, k, np.linalg.det(self.smoother_.marginalCovariance(k)))
 
-            if len(self.mappingStartKeyDets_[k]) >= 2:
-                pctChange = (self.mappingStartKeyDets_[k][-2] - self.mappingStartKeyDets_[k][-1]) / self.mappingStartKeyDets_[k][-2]
-                print(f"Percent change determinant for key {gtsam.Symbol(k).string()} is {pctChange*100:.2f}%")
+            if len(self.covChangeStartKeyDets_[k]) >= 2:
+                pctChange = (self.covChangeStartKeyDets_[k][-1] - self.covChangeStartKeyDets_[k][-2]) / self.covChangeStartKeyDets_[k][-2]
+                print(f"Percent change determinant for start key {gtsam.Symbol(k).string()} is {pctChange*100:.2f}%")
 
-                if abs(pctChange) > 0.05:
+                if pctChange > 0.1 or flush:
+                    # Must be below threshold for 2 in a row
+                    if self.covChangeStartKeyJitterBuffer_[k] < 1 and not flush:
+                        self.covChangeStartKeyJitterBuffer_[k] += 1
+                        continue
                     # Relabel and freeze current session factors and values previous to k
                     keysToChange = []
-                    for swk in slidingWindowKeys:
-                        if swk == k:
+                    currKeyIdx = gtsam.Symbol(k).index()
+                    for csk in self.sessionKeys[self.currentSessionSymbol_]:
+                        csi = gtsam.Symbol(csk).index()
+                        if csi >= currKeyIdx:
                             break
-                        if self.IsCurrentSessionKey(swk):
-                            keysToChange.append(swk)
-                    self.RenameKeysInPlace({self.currentSessionSymbol_: self.addToPriorSymbol_}, keepKeyIndex=True, freezeNewNodes=True)
-                    self.mappingStartKeys_.remove(k)
-                    self.mappingStartKeyDets_.pop(k)
+                        else:
+                            keysToChange.append(csk)
+                    
+                    self.RenameKeysInPlace({self.currentSessionSymbol_: self.addToPriorSymbol_}, keys=keysToChange, keepKeyIndex=True, freezeNewNodes=True)
+                    self.covChangeStartKeys_.remove(k)
+                    self.covChangeStartKeyDets_.pop(k)
+                    self.covChangeStartKeyJitterBuffer_.pop(k)
+                else:
+                    self.covChangeStartKeyJitterBuffer_[k] = 0
+                
+
+        # Leave mapping and enter localization
+        for k in self.covChangeEndKeys_:
+            if k not in slidingWindowKeys or gtsam.Symbol(self.currentSessionSymbol_, gtsam.Symbol(k).index()).key()+1 not in self.sessionKeys[self.currentSessionSymbol_]:
+                self.covChangeEndKeys_.remove(k)
+                self.covChangeEndKeyDets_.pop(k)
+                if k in self.covChangeEndKeyJitterBuffer_:
+                    self.covChangeEndKeyJitterBuffer_.pop(k)
+                continue
+            elif k not in self.covChangeEndKeyJitterBuffer_:
+                self.covChangeEndKeyJitterBuffer_[k] = 0
+            
+            fgtools.AddValueToDictList(self.covChangeEndKeyDets_, k, np.linalg.det(self.smoother_.marginalCovariance(k)))
+
+            if len(self.covChangeEndKeyDets_[k]) >= 2:
+                pctChange = (self.covChangeEndKeyDets_[k][-2] - self.covChangeEndKeyDets_[k][-1]) / self.covChangeEndKeyDets_[k][-2]
+                print(f"Percent change determinant for end key   {gtsam.Symbol(k).string()} is {pctChange*100:.2f}%")
+
+                if (pctChange < 0.1 and pctChange >= 0.005) or flush:
+                    # Must be below threshold for 2 in a row
+                    if self.covChangeEndKeyJitterBuffer_[k] < 1 and not flush:
+                        self.covChangeEndKeyJitterBuffer_[k] += 1
+                        continue
+                    # Relabel and freeze current session factors and values previous to k
+                    keysToChange = []
+                    currKeyIdx = gtsam.Symbol(k).index()
+                    for csk in reversed(self.sessionKeys[self.currentSessionSymbol_]):
+                        csi = gtsam.Symbol(csk).index()
+                        if csi <= currKeyIdx:
+                            break
+                        else:
+                            keysToChange.append(csk)
+                    
+                    self.RenameKeysInPlace({self.currentSessionSymbol_: self.addToPriorSymbol_}, keys=keysToChange, keepKeyIndex=True, freezeNewNodes=True)
+                    self.covChangeEndKeys_.remove(k)
+                    self.covChangeEndKeyDets_.pop(k)
+                    self.covChangeEndKeyJitterBuffer_.pop(k)
+                else:
+                    self.covChangeEndKeyJitterBuffer_[k] = 0
                     
 
     def GetMostRecentKeys(self, numKeys:int) -> list[int]:
