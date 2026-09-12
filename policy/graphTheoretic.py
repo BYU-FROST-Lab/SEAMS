@@ -2,7 +2,7 @@ from policy.base import NodeDecisionPolicy
 from metrics import Metrics
 import numpy as np
 from params import Params
-from common.customTypes import NodeDecision
+from common.customTypes import NodeDecision, DecisionType
 
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
@@ -22,14 +22,18 @@ class TwoStepConnectivityPolicy(NodeDecisionPolicy):
     # Algebraic connectivity is identically 0 if the graph is disconnected.
     LAMBDA2_EPS = 1e-8
 
-    def __init__(self, params: Params):
+    def __init__(self, params: Params, twoOption: bool = False):
         super().__init__(params)
-        self.d_bar_hist = []
-        self.d_bar_hist_current = []
+        self.d_bar_first = None
+        self.d_bar_hist_overall = []
+        self.d_bar_hist_while_localizing = []
+        self.d_bar_hist_while_mapping = []
+        self.twoOption = twoOption
+        
         self.debug = params.twoStepConnectivityPolicy.debug
         if params.twoStepConnectivityPolicy.showDLplot:
             _, self.ax = plt.subplots()
-            _, self.ax2 = plt.subplots()
+            # _, self.ax2 = plt.subplots()
         self.previousState_ = NodeDecision.INITIALIZE
 
     def DetermineDecisionState(self, metrics: Metrics) -> NodeDecision:
@@ -41,27 +45,40 @@ class TwoStepConnectivityPolicy(NodeDecisionPolicy):
         cfg = self.params.twoStepConnectivityPolicy
         window = cfg.movingAverageLength
 
+        if self.d_bar_first is None:
+            self.d_bar_first = d_bar
+
         # Build the localization baseline before making any MAP/LOCALIZE decision.
         # Samples collected while mapping would pull mu down and collapse the test.
-        if len(self.d_bar_hist) < window:
-            # if current_state != NodeDecision.MAP:
-            self.d_bar_hist.append(d_bar)
+        if len(self.d_bar_hist_while_localizing) < window:
+            if current_state != NodeDecision.MAP:
+                self.d_bar_hist_while_localizing.append(d_bar)
             # return NodeDecision.LOCALIZE
-            if self.previousState_ == NodeDecision.INITIALIZE:
-                lambda2 = metrics.ComputeFiedler()
-                if (lambda2 > self.LAMBDA2_EPS):
-                    self.previousState_ = NodeDecision.LOCALIZE
-                else:
-                    self.previousState_ = NodeDecision.MAP
-                if self.debug:
-                    print(f"TWO_STEP_VALIDATION - Starting in {self.previousState_.name} mode")
-            return self.previousState_
+            # if self.previousState_ == NodeDecision.INITIALIZE:
+            #     lambda2 = metrics.ComputeFiedler()
+            #     if (lambda2 > self.LAMBDA2_EPS):
+            #         self.previousState_ = NodeDecision.LOCALIZE
+            #     else:
+            #         self.previousState_ = NodeDecision.MAP
+            #     if self.debug:
+            #         if metrics.params.policyType == DecisionType.TWO_STEP_VALIDATION:
+            #             print(f"TWO_STEP_VALIDATION - Starting in {self.previousState_.name} mode")
+            #         else:
+            #             print(f"TWO_OPTION - Starting in {self.previousState_.name} mode")
+
+            # return self.previousState_
+            if len(self.d_bar_hist_while_localizing) < 4:
+                return NodeDecision.LOCALIZE
 
 
-        mu = float(np.mean(self.d_bar_hist))
-        sigma = float(np.std(self.d_bar_hist, ddof=1)) if len(self.d_bar_hist) > 1 else 0.0
+        mu = float(np.mean(self.d_bar_hist_while_localizing))
+        sigma = float(np.std(self.d_bar_hist_while_localizing, ddof=1)) if len(self.d_bar_hist_while_localizing) > 1 else 0.0
         # sigma = max(sigma, abs(mu) * cfg.minRelativeSigma, 1e-12)
-        sigma = max(sigma, cfg.minRelativeSigma, 1e-12)
+        # if len(self.d_bar_hist_overall) >= 2:
+        #     minSigmaCalc = 0.005 * (max(self.d_bar_hist_overall) - self.d_bar_first)
+        # else:
+        minSigmaCalc = 0.0
+        sigma = max(sigma, cfg.minRelativeSigma, minSigmaCalc, 1e-12)
         lower_2 = mu - 2.0 * sigma
         lower_4 = mu - 4.0 * sigma
 
@@ -72,55 +89,68 @@ class TwoStepConnectivityPolicy(NodeDecisionPolicy):
             or current_state == NodeDecision.MAP
             or cfg.showDLplot
             or self.debug
+            or self.twoOption
         )
         lambda2 = metrics.ComputeFiedler() if need_lambda else np.nan
         connected = bool(need_lambda) and (lambda2 > self.LAMBDA2_EPS)
 
+        self.d_bar_hist_overall.append(d_bar)
+        while len(self.d_bar_hist_overall) > window:
+            self.d_bar_hist_overall.pop(0)
+
         if current_state == NodeDecision.MAP:
+            self.d_bar_hist_while_mapping.append(d_bar)
+            d_bar_min = min(self.d_bar_hist_while_mapping)
+            close_enough_to_recovery = d_bar_min + 0.5 * (self.d_bar_hist_while_localizing[-1] - d_bar_min)
             # Two-step recovery: d-bar back inside the 2-sigma band AND lambda_2 > 0.
-            recovered = (d_bar >= lower_2) and connected
+            recovered = (d_bar > lower_4 or d_bar > close_enough_to_recovery) and connected
             ret = NodeDecision.LOCALIZE if recovered else NodeDecision.MAP
+            if ret == NodeDecision.LOCALIZE:
+                self.d_bar_hist_while_localizing += self.d_bar_hist_overall
+                while len(self.d_bar_hist_while_localizing) > window:
+                    self.d_bar_hist_while_localizing.pop(0)
+                self.d_bar_hist_while_mapping = [] # Reset the mapping history.
         else:
             ret = NodeDecision.LOCALIZE
-            if d_bar < lower_2:
+            close_enough_to_recovery = None # TODO: Only here for plotting.
+            if d_bar < lower_2 or self.twoOption:
                 if (not connected) or (d_bar < lower_4):
                     ret = NodeDecision.MAP
-            # if ret != NodeDecision.MAP:
-            if True: # TODO: Debugging.
-                self.d_bar_hist.append(d_bar)
-                while len(self.d_bar_hist) > window:
-                    self.d_bar_hist.pop(0)
+            if ret != NodeDecision.MAP:
+            # if True: # TODO: Debugging.
+                self.d_bar_hist_while_localizing.append(d_bar)
+                while len(self.d_bar_hist_while_localizing) > window:
+                    self.d_bar_hist_while_localizing.pop(0)
 
         if self.debug:
             print(f"\nd_bar: {d_bar}, mu: {mu}, sigma: {sigma}, lambda_2: {lambda2}")
             print(f"  Step 1: d_bar < mu-2sigma = {d_bar < lower_2}")
             print(f"  Step 2: d_bar < mu-4sigma = {d_bar < lower_4}")
             print(f"          lambda_2 == 0       {need_lambda and not connected}")
+            print(f"  Close enough:               {close_enough_to_recovery}")
             print(f"  decision: {ret.name}\n")
 
         if cfg.showDLplot:
             plot_lambda = float(lambda2) if need_lambda else 0.0
             plot_d_and_lambda(d_bar, 
-                            #   float(lower_2), 
-                            #   float(lower_4), 
-                              float(2*sigma), 
-                              float(4*sigma), 
+                              float(lower_4), 
+                              close_enough_to_recovery, 
                               plot_lambda, 
                               ax=self.ax, 
-                              ax2=self.ax2, 
+                            #   ax2=self.ax2, 
                               graphWindowLength=cfg.graphWindowLength
                               )
 
-        return NodeDecision.LOCALIZE # TODO: Remove this
+        # return NodeDecision.LOCALIZE # TODO: For Debugging.
         return ret
 
 
 def plot_d_and_lambda(d_hist: float|list[float],
                       d2_hist: float|list[float],
-                      d4_hist: float|list[float],
+                      d4_hist: float|list[float]|None,
                       lambda_hist: float|list[float],
                       ax:Axes|None=None,
-                      ax2:Axes|None=None,
+                    #   ax2:Axes|None=None,
                       graphWindowLength: int=15,
                       ) -> Axes:
     def _as_float_list(values: float|list[float]) -> list[float]:
@@ -132,16 +162,16 @@ def plot_d_and_lambda(d_hist: float|list[float],
     if ax is None:
         fig, ax = plt.subplots()
     
-    if ax2 is None:
-        fig2, ax2 = plt.subplots()
+    # if ax2 is None:
+    #     fig2, ax2 = plt.subplots()
 
     state = getattr(ax, "_d_and_lambda_plot_state", None)
     if state is None:
         # Create the right-side axis once and keep both line artists for fast updates.
         lambda_ax = ax.twinx()
         d_line, = ax.plot([], [], color="tab:blue", label="d_hist")
-        d2_line, = ax2.plot([], [], color="tab:green", label="d2_hist")
-        d4_line, = ax2.plot([], [], color="tab:orange", label="d4_hist")
+        d2_line, = ax.plot([], [], color="tab:green", label="d2_hist")
+        d4_line, = ax.plot([], [], color="tab:orange", label="d4_hist")
         lambda_line, = lambda_ax.plot([], [], color="tab:red", label="lambda_hist")
 
         # Label and color each axis so the two scales are easy to read.
@@ -153,8 +183,8 @@ def plot_d_and_lambda(d_hist: float|list[float],
 
         state = {
             "d_ax": ax,
-            "d2_ax": ax2,
-            "d4_ax": ax2,
+            "d2_ax": ax,
+            "d4_ax": ax,
             "lambda_ax": lambda_ax,
             "d_line": d_line,
             "d2_line": d2_line,
@@ -170,11 +200,11 @@ def plot_d_and_lambda(d_hist: float|list[float],
             "lambda_y": [],
         }
         setattr(ax, "_d_and_lambda_plot_state", state)
-        setattr(ax2, "_d_and_lambda_plot_state", state)
+        # setattr(ax2, "_d_and_lambda_plot_state", state)
 
     d_values = _as_float_list(d_hist)
     d2_values = _as_float_list(d2_hist)
-    d4_values = _as_float_list(d4_hist)
+    d4_values = _as_float_list(d4_hist) if d4_hist is not None else None
     lambda_values = _as_float_list(lambda_hist)
 
     # Append only the new samples so repeated calls stay timely for live plotting.
@@ -182,19 +212,20 @@ def plot_d_and_lambda(d_hist: float|list[float],
     state["d_x"].extend(range(d_start, d_start + len(d_values)))
     state["d_y"].extend(d_values)
 
-    d2_start = int(state["d2_x"][-1]+1) if len(state["d2_x"]) > 0 else 0
-    state["d2_x"].extend(range(d2_start, d2_start + len(d2_values)))
+    # d2_start = int(state["d2_x"][-1]+1) if len(state["d2_x"]) > 0 else 0
+    state["d2_x"].extend(range(d_start, d_start + len(d2_values)))
     state["d2_y"].extend(d2_values)
     # if d2_start > graphWindowLength:
     #     state["d2_x"] = state["d2_x"][-graphWindowLength:]
     #     state["d2_y"] = state["d2_y"][-graphWindowLength:]
 
-    d4_start = int(state["d4_x"][-1]+1) if len(state["d4_x"]) > 0 else 0
-    state["d4_x"].extend(range(d4_start, d4_start + len(d4_values)))
-    state["d4_y"].extend(d4_values)
-    # if d4_start > graphWindowLength:
-    #     state["d4_x"] = state["d4_x"][-graphWindowLength:]
-    #     state["d4_y"] = state["d4_y"][-graphWindowLength:]
+    if d4_values is not None:
+        # d4_start = int(state["dy"][-1]+1) if len(state["d4_x"]) > 0 else 0
+        state["d4_x"].extend(range(d_start, d_start + len(d4_values)))
+        state["d4_y"].extend(d4_values)
+        # if d4_start > graphWindowLength:
+        #     state["d4_x"] = state["d4_x"][-graphWindowLength:]
+        #     state["d4_y"] = state["d4_y"][-graphWindowLength:]
 
     lambda_start = len(state["lambda_y"])
     state["lambda_x"].extend(range(lambda_start, lambda_start + len(lambda_values)))
@@ -202,16 +233,17 @@ def plot_d_and_lambda(d_hist: float|list[float],
 
     state["d_line"].set_data(state["d_x"], state["d_y"])
     state["d2_line"].set_data(state["d2_x"], state["d2_y"])
-    state["d4_line"].set_data(state["d4_x"], state["d4_y"])
+    if d4_values is not None:
+        state["d4_line"].set_data(state["d4_x"], state["d4_y"])
     state["lambda_line"].set_data(state["lambda_x"], state["lambda_y"])
 
     # Rescale the axes around the updated line data without recreating the plot.
     ax.relim()
     ax.autoscale_view()
-    ax2.relim()
-    ax2.autoscale_view()
+    # ax2.relim()
+    # ax2.autoscale_view()
     state["lambda_ax"].relim()
     state["lambda_ax"].autoscale_view()
     ax.figure.canvas.draw_idle()
-    ax2.figure.canvas.draw_idle()
+    # ax2.figure.canvas.draw_idle()
     return ax

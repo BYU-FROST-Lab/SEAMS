@@ -75,7 +75,7 @@ def run_session(params: Params = Params(),
     #########################################################################################
 
     # MAX_COUNT = 200
-    MAX_COUNT = 20
+    MAX_COUNT = 5
     FIXED_WINDOW = False
     SAVE_FULL_SESSION = True
     SAME_SESSION_COV_CHANGE_PLOT = False
@@ -302,24 +302,26 @@ def run_session(params: Params = Params(),
             # Get Covariance of New nodes #
             ###############################
 
-            refKeys = currentSession[vizIndex].GetKeys(currentSession[vizIndex].addToPriorSymbol)
-            currIsam = currentSession[vizIndex].isam2
-            for k in refKeys:
-                if k in sscp_dets:
-                    sscp_dets[k].append(np.linalg.det(currIsam.marginalCovariance(k))) # Take determinant of translation part of covariance matrix
-                else:
-                    sscp_dets[k] = [np.linalg.det(currIsam.marginalCovariance(k))] # Take determinant of translation part of covariance matrix
-            print(f"Time to calc full det: {time.time() - start}")
+#             refKeys = currentSession[vizIndex].GetKeys(currentSession[vizIndex].addToPriorSymbol)
+#             currIsam = currentSession[vizIndex].isam2
+#             for k in refKeys:
+#                 if k in sscp_dets:
+#                     sscp_dets[k].append(np.linalg.det(currIsam.marginalCovariance(k))) # Take determinant of translation part of covariance matrix
+#                 else:
+#                     sscp_dets[k] = [np.linalg.det(currIsam.marginalCovariance(k))] # Take determinant of translation part of covariance matrix
+#             # print(f"Time to calc full det: {time.time() - start}")
 
-            start = time.time()
-            currentSession[vizIndex].isam2.marginalInformation(k)
-            print(f"Time to calc marg information from isam: {time.time() - start}")
-
-            start = time.time()
-            currentSession[vizIndex].smoother_.marginalCovariance(k)
-            print(f"Time to calc marg information from isam: {time.time() - start}")
 # |
 # v
+            ####################################
+            # Get Covariance of Boundary nodes #
+            ####################################
+
+            refKeys = currentSession[vizIndex].boundaryNodes
+            currIsam = currentSession[vizIndex].isam2
+            for k in refKeys:
+                fgtools.AddValueToDictList(sscp_dets, k, np.linalg.det(currIsam.marginalCovariance(k)))
+
             ##################################
             # Get Information of Full window #
             ##################################
@@ -388,6 +390,7 @@ def run_session(params: Params = Params(),
                     ax.set_ylim(min(p1.y(), p2.y())-offset, max(p1.y(), p2.y())+offset)
 #########
                 plt.pause(0.05)
+                pass
 #########
             if show_o3d and not viz.update():
                 print("Open3D window closed — disabling live 3D visualization.")
@@ -526,6 +529,7 @@ def main():
         "-t",
         "--transition_check",
         action="store_true",
+        default=None,
         help="Used to make the boundary between localization and mapping well constrained."
         "Checks the determinant of first and last mapping nodes."
     )
@@ -536,34 +540,44 @@ def main():
     # Hardcode values for testing purposes #
     ########################################
 
-    # args.evaluate_decision_types = [
+    args.evaluate_decision_types = [
     #     "NONE",
     #     "DISTANCE",
     #     "OVERLAP",
     #     "INLIER_RATIO",
     #     "INLIER_RMSE",
-    #     # "TWO_STEP_VALIDATION",
+        "TWO_STEP_VALIDATION",
+        "TWO_OPTION",
     #     "RELATIVE_COVARIANCE",
-    # ]   
-    args.policy = "RELATIVE_COVARIANCE"
-    # args.viz = "none"
-    args.prior_update_method = 2 # 0: post, 2: continuous
-    args.transition_check = True
+    ]   
+    args.policy = "TWO_STEP_VALIDATION"
+    args.viz = "none"
+    args.prior_update_method = 0 # 0: post, 2: continuous
+    args.transition_check = False
+    dirAfterResults = "twoStepEval"
 
     args.dataset = "nc"
     args.missions = [
-    #     "quad-easy",
-    #     "quad-medium",
-    #     "quad-hard",
-    #     "cloister",
+        # "quad-easy",
+        "quad-medium",
+        "quad-hard",
+        "cloister",
         "park",
     ]
-    args.load_session_dir = moduleDir / "results/accuracyEval/nc/wellConstrained/continuous/cloister__quad-hard__quad-medium__quad-easy/"
-    # args.load_session_dir = moduleDir / "results/nc/post/cloister__quad-hard__quad-medium__quad-easy"
-    # args.load_session_dir = moduleDir / "results/nc/post/quad-easy"
-    # args.save_session_dir = moduleDir / "results/nc/well_constrained/quad-medium__quad-easy"
-    # args.save_session_dir = moduleDir / "results/marginalizationEvaluation/nc/approx__quad-hard__quad-easy"
-    # args.save_session_dir = moduleDir / "results/accuracyEval/nc/wellConstrained_continuous/quad-easy/"
+    # # args.load_session_dir = moduleDir / "results/accuracyEval/nc/wellConstrained/continuous/cloister__quad-hard__quad-medium__quad-easy/"
+    # # args.load_session_dir = moduleDir / "results/nc/post/cloister__quad-hard__quad-medium__quad-easy"
+    # args.load_session_dir = moduleDir / "results/accuracyEval/nc/exact/post/quad-easy"
+    # args.save_session_dir = moduleDir / "results/twostepEval/nc/exact/post/quad-medium__quad-easy"
+    args.load_session_dir = moduleDir / "results/twoStepEval/nc/exact/post/quad-easy"
+    args.save_session_dir = moduleDir / "results/twoStepEval2/nc/exact/post/quad-medium__quad-easy"
+    # args.save_session_dir = moduleDir / "results/test/nc/wellConstrained/post/quad-medium__quad-easy"
+    # args.load_session_dir = moduleDir / "results/test/nc/wellConstrained/post/quad-medium__quad-easy"
+    # args.load_session_dir = moduleDir / "results/accuracyEval/nc/wellConstrained/post/cloister__quad-hard__quad-medium__quad-easy"
+    # args.save_session_dir = moduleDir / "results/transitionBoundaryEval/nc/exact/quad-hard__quad-easy"
+    # args.save_session_dir = moduleDir / "results/transitionBoundaryEval/nc/wellConstrained/quad-hard__quad-easy"
+    # # args.save_session_dir = moduleDir / "results/nc/well_constrained/quad-medium__quad-easy"
+    # # args.save_session_dir = moduleDir / "results/marginalizationEvaluation/nc/approx__quad-hard__quad-easy"
+    # args.save_session_dir = moduleDir / "results/accuracyEval/nc/exact/continuous/quad-easy/"
 
     # args.dataset = "urban"
     # args.mission = "block1"
@@ -579,21 +593,21 @@ def main():
     # args.missions = [
     # #     # "2012-01-08",
     #     "2012-01-15",
-    # #     "2012-01-22",
-    # #     "2012-04-29",
-    # #     "2012-05-11",
+    #     # "2012-01-22",
+    #     # "2012-04-29",
+    #     # "2012-05-11",
     #     # "2012-06-15",
     #     # "2013-02-23",
     # ]
     # args.load_session_dir = moduleDir / "results/nclt/post/2012-01-08"
-    # args.save_session_dir = moduleDir / "results/accuracyEval/nclt/wellConstrained/2012-01-15__2012-01-08"
+    # args.save_session_dir = moduleDir / "results/accuracyEval/nclt/exact/post/2012-01-15__2012-01-08"
     # # # # args.save_session_dir = moduleDir / "results/nclt/1_nclt2ros"
 
     ########################################
 
-    priorUpdateMethod = Params().priorUpdateMethod if not args.prior_update_method else args.prior_update_method
+    priorUpdateMethod = Params().priorUpdateMethod if args.prior_update_method is None else args.prior_update_method
     priorUpdateMethodString = "post" if priorUpdateMethod == 0 else "incremental" if priorUpdateMethod == 1 else "continuous"
-    transitionBroundaryCheck = Params().enableTransitionInformationCheck if not args.transition_check else args.transition_check
+    transitionBroundaryCheck = Params().enableTransitionInformationCheck if args.transition_check is None else args.transition_check
     transitionBroundaryTypeString = "wellConstrained" if transitionBroundaryCheck else "exact"
 
     i = 0
@@ -642,7 +656,7 @@ def main():
             save_session_dir = load_session_dir.parent / f"{mission}__{load_session_dir.name}"
         else:
             if args.dataset and mission:
-                save_session_dir = moduleDir / "results" / args.dataset / transitionBroundaryTypeString / priorUpdateMethodString / mission
+                save_session_dir = moduleDir / "results" / dirAfterResults /args.dataset / transitionBroundaryTypeString / priorUpdateMethodString / mission
             else:
                 save_session_dir = moduleDir / "results/test_session"
             while save_session_dir.exists():

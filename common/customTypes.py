@@ -39,6 +39,7 @@ class DecisionType(Enum):
 
     # graph theoretic
     TWO_STEP_VALIDATION = auto()
+    TWO_OPTION = auto()
 
     # probablistic
     RELATIVE_COVARIANCE = auto()

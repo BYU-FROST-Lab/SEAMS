@@ -87,7 +87,7 @@ class Metrics:
             if self.params.inlierRMSEPolicy.debug:
                 print(f"Metrics: InlierRMSE = {self.lastInterInlierRMSE}, Len Correspondences = {num_correspondence_set}")
 
-        if DecisionType.TWO_STEP_VALIDATION in self.method_:
+        if DecisionType.TWO_STEP_VALIDATION in self.method_ or DecisionType.TWO_OPTION in self.method_:
             self.gtsamGraph = cleanFactorGraph(isam)
             self.gtsamValues = isam.calculateEstimate()
             # Build/sync the graph incrementally over prior map + sliding window.
@@ -137,6 +137,7 @@ class Metrics:
         if self.wpg is None:
             self.wpg = WeightedPoseGraph(criteria=['t_opt', 'e_opt'])
         self.wpg.update(self.gtsamGraph, self.gtsamValues, keysToUse)
+        # self.wpg.plot_graph(draw_LC_complex=True)
 
     def ComputeDBar(self) -> float:
         """Weighted average node degree d-bar from the T-weighted Laplacian.

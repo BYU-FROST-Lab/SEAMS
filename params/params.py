@@ -16,7 +16,7 @@ class LoopClosure:
     skipFrames: int = 0
     intraNearKeyFrames: int = 5     # Same session
     interNearKeyFramesCurrent: int = 0     # >=0 Between session. Number of key frames to use in current window in addition to the current pose for registration to the prior session.
-    interNearKeyFramesPrior: int = 10     # >=0 Between session. Number of key frames on each side of the current pose to use for registration to the prior session.
+    interNearKeyFramesPrior: int = 5     # >=0 Between session. Number of key frames on each side of the current pose to use for registration to the prior session.
     voxelSize: float | None = 0.4
     fitnessThreshold: float = 0.5
     rmseThreshold: float = 0.3
@@ -62,9 +62,10 @@ class TwoStepConnectivityPolicy:
     # Floor on sigma as a fraction of mu so a perfectly stable d-bar does not
     # treat every numerical wiggle as a 2/4-sigma drop (arXiv:2602.17226 §III-B2).
     minRelativeSigma: float = 0.01
-    maxConnections: int = 5 # maximum loop closure connections for two step validation
+    maxConnections: int = 1 # maximum loop closure connections for two step validation
+    # twoOption: bool = False
     showDLplot: bool = True
-    debug: bool = True
+    debug: bool = False
 
 # Probabilistic
 @dataclass
@@ -109,7 +110,7 @@ class Params:
     # 0: Only add to prior at end of session
     # 1: add to prior when transitioning from mapping to localization 
     # 2: add to prior whenever in mapping mode
-    priorUpdateMethod: int = 2
+    priorUpdateMethod: int = 0
 
     # Save session params
     moduleDir: Path = Path(__file__).parents[1]

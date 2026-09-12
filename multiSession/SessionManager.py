@@ -43,13 +43,15 @@ class SessionManager:
         # I have gotten weird errors where calculateEstimate() tries to find a value I've already removed and throws an error.
         # I'm not sure why, but it works with these parameters.
         self.isamParams_ = gtsam.ISAM2Params()
-        # if self.params.dataset == "nclt":
-        self.isamParams_.setRelinearizeThreshold(0.0) # Must be zero to work
-        self.isamParams_.relinearizeSkip = 1 # Must be small (<4) to work
-        self.isamParams_.findUnusedFactorSlots = True # Docs say to use this when doing fixedLagSmoother type things.
-        self.isamParams_.setFactorization("QR")
-            # self.isamParams_.evaluateNonlinearError = True
-        print(f"ISAM Params:\n{self.isamParams_}")
+        if self.params.dataset == "nclt":
+            gnParams = gtsam.ISAM2GaussNewtonParams(0.0) # enforces error propagation to go through entire tree instead of ending early
+            self.isamParams_.setOptimizationParams(gnParams)
+            self.isamParams_.setRelinearizeThreshold(0.0) # Must be zero to work
+            self.isamParams_.relinearizeSkip = 1 # Must be small (<4) to work
+            self.isamParams_.findUnusedFactorSlots = True # Docs say to use this when doing fixedLagSmoother type things.
+            self.isamParams_.setFactorization("QR")
+            # # self.isamParams_.evaluateNonlinearError = True
+        # print(f"ISAM Params:\n{self.isamParams_}")
     
         self.smoother_ = gtsam.IncrementalFixedLagSmoother(float(self.params.fixedLagKeepFrames), self.isamParams_)
         self.currTimestamp_ = 0.0
@@ -62,6 +64,11 @@ class SessionManager:
         self.loopCnt_ = 0
         self.interLoopValues_ = gtsam.Values()
 
+        self.TWO_STEP_OR_TWO_OPTION = (
+            self.params.policyType == DecisionType.TWO_STEP_VALIDATION or
+            self.params.policyType == DecisionType.TWO_OPTION
+            )
+
         if self.params.policyType == DecisionType.NONE:
             self.decider = NoDecisionPolicy(self.params)
         elif self.params.policyType == DecisionType.DISTANCE:
@@ -72,13 +79,16 @@ class SessionManager:
             self.decider = InlierRatioPolicy(self.params)
         elif self.params.policyType == DecisionType.INLIER_RMSE:
             self.decider = InlierRMSEPolicy(self.params)
-        elif self.params.policyType == DecisionType.TWO_STEP_VALIDATION:
+        elif self.TWO_STEP_OR_TWO_OPTION:
             if self.params.twoStepConnectivityPolicy.graphWindowLength > self.params.fixedLagKeepFrames:
                 raise ValueError(
                     f"TwoStepConnectivityPolicy.graphWindowLength ({self.params.twoStepConnectivityPolicy.graphWindowLength}) "
                     f"must be <= Params.fixedLagKeepFrames ({self.params.fixedLagKeepFrames})"
                 )
-            self.decider = TwoStepConnectivityPolicy(self.params)
+            if self.params.policyType == DecisionType.TWO_STEP_VALIDATION:
+                self.decider = TwoStepConnectivityPolicy(self.params, twoOption=False)
+            else:
+                self.decider = TwoStepConnectivityPolicy(self.params, twoOption=True)
         elif self.params.policyType == DecisionType.RELATIVE_COVARIANCE:
             self.decider = RelativeCovariancePolicy(self.params)
         else:
@@ -320,7 +330,7 @@ class SessionManager:
         previousState = copy(self.decisionState_)
         if self.interLoopTree_ is None:
             return False
-        if self.params.policyType == DecisionType.TWO_STEP_VALIDATION:
+        if self.TWO_STEP_OR_TWO_OPTION:
             # Graph for Laplacian / d-bar / lambda_2: prior map keys first so
             # they are inserted before the recent sliding-window keys.
             connectivityKeys = list(self.priorValues_.keys()) + self.GetMostRecentKeys(self.params.twoStepConnectivityPolicy.graphWindowLength)
@@ -665,11 +675,23 @@ class SessionManager:
         
         if decisionStateChanged and len(self.recentKeysQueue_) > 1:
             if self.decisionState_ == NodeDecision.MAP:
-                if self.IsCurrentSessionKey(self.lastOdomKey_):
+                if self.TWO_STEP_OR_TWO_OPTION:
+                        keysToRename = []
+                        for k in self.sessionKeys[self.currentSessionSymbol_]:
+                            s = gtsam.Symbol(k)
+                            if s.index() < (self.currTimestamp_ - self.params.twoStepConnectivityPolicy.graphWindowLength):
+                                continue
+                            keysToRename.append(k)
+                        self.RenameKeysInPlace({self.currentSessionSymbol_: self.addToPriorSymbol_}, keysToRename, freezeNewNodes=True)
+                        key = gtsam.Symbol(self.addToPriorSymbol_, gtsam.Symbol(keysToRename[0]).index()).key()
+                        self.mappingStartKeys_.append(key)
+                        self.covChangeStartKeys_.append(key)
+                elif self.IsCurrentSessionKey(self.lastOdomKey_):
                     self.mappingStartKeys_.append(newKey)
                     self.covChangeStartKeys_.append(newKey)
                     if self.params.policyType == DecisionType.RELATIVE_COVARIANCE:
                         self.relCovStartKeys_.append(newKey)
+
             else:
                 if self.IsAddToPriorSessionKey(self.lastOdomKey_):
                     if self.lastOdomKey_ in self.mappingStartKeys_: # Only one node in mapping because it's the beginning and end
@@ -869,12 +891,12 @@ class SessionManager:
         numInterLoops = 0
         if inter and self.interLoopTree_:
 
-            if self.params.policyType == DecisionType.TWO_STEP_VALIDATION:
+            if self.TWO_STEP_OR_TWO_OPTION:
                 distances, indices = self.interLoopTree_.tree.query(currPose.translation(), 
                                                                     k=self.params.twoStepConnectivityPolicy.maxConnections)
             else:
                 distances, indices = self.interLoopTree_.tree.query(currPose.translation(), 
-                                                                    k=self.params.loopClosure.interNearKeyFramesPrior) 
+                                                                    k=self.params.loopClosure.interNearKeyFramesPrior*2) 
             # distances, indices = self.interLoopTree_.tree.query(pose.translation()) # Look for the 5 closest poses given the distance is less than 30
             keys = deepcopy(self.interLoopTree_.keys)
 
@@ -887,7 +909,7 @@ class SessionManager:
             self.closestSubmapData_.currCenterPoint = self.currentEstimate_.atPose3(self.lastOdomKey_).translation()
             self.closestSubmapData_.currKey = copy(self.lastOdomKey_)
 
-            if self.params.policyType == DecisionType.TWO_STEP_VALIDATION:
+            if self.TWO_STEP_OR_TWO_OPTION:
                 for i, k in enumerate(keysToSearch):
                     foundInterLoop, reg = self.LoopCheckGivenKey([k], 
                                                                  addFactor=True, 
@@ -1188,7 +1210,8 @@ class SessionManager:
 
             return self.GetSessionInfo()
         else:
-            self.CheckDeterminants(flush=True)
+            if self.params.enableTransitionInformationCheck:
+                self.CheckDeterminants(flush=True)
             return self.GetSessionInfo(excludeSymbols=[self.currentSessionSymbol_])
  
         
@@ -1216,7 +1239,7 @@ class SessionManager:
         self.UpdatePriorTree()
         # self.UpdatePriorKeyToFactorIndexDict()
 
-    def SaveSession(self, directory:str|Path|None=None):
+    def SaveSession(self, directory:str|Path|None=None, final: bool = True):
         if directory is None:
             directory = self.params.saveSessionDir
         
@@ -1244,18 +1267,24 @@ class SessionManager:
         print(f"Saving session to {directory}...")
         os.makedirs(directory, exist_ok=True)
 
-        finalGraph, finalValues, finalPcds, finalTimestamps = self.GetFinalSessionInfo()
+        if final:
+            finalGraph, finalValues, finalPcds, finalTimestamps = self.GetFinalSessionInfo()
+        else:
+            finalGraph, finalValues, finalPcds, finalTimestamps = self.GetSessionInfo()
         # fgtools.writeG2oWithPrior(self.graph, self.values, str(directory / "graph.g2o"))
 
         # PCDs are stored once in the base directory (parent of the policy dir)
         # under scans/{A,B,C}/ so they can be shared across policies.
-        if self.params.loadSessionDir:
+        if (self.params.loadSessionDir  or self.params.priorUpdateMethod == 2) and final:
             scans_root = directory.parent / "scans"
         else:
             scans_root = directory / "scans"
         
         if not fgtools.saveSymbolPCDs(finalPcds, scans_root):
             print(f"Error saving point clouds to {str(scans_root)}")
+        # Ensure the that if there were no new nodes added, the addToPrior symbol directory is still created for other policies
+        (scans_root / self.addToPriorSymbol_).mkdir(parents=True, exist_ok=True)
+        
         if not gtsam_unstable.serializeGraphToFile(finalGraph, str(directory / "graph.gtsam")):
             print(f"Error saving graph to {str(directory / 'graph.gtsam')}")
         if not gtsam_unstable.serializeValuesToFile(finalValues, str(directory / "values.gtsam")):
@@ -1301,10 +1330,10 @@ class SessionManager:
 
         # scansDir = baseScansDir if useSharedScans else legacyScansDir
 
-        if Path(directory.parent / "scans").exists():
-            scansDir = directory.parent / "scans"
-        elif Path(directory / "scans").exists():
+        if Path(directory / "scans").exists():
             scansDir = directory / "scans"
+        elif Path(directory.parent / "scans").exists():
+            scansDir = directory.parent / "scans"
         else:
             raise ValueError(f"LoadSession: Can't find 'scans' directory in directory or its parent - {directory}")
 
@@ -1502,7 +1531,8 @@ class SessionManager:
         for k in self.covChangeStartKeys_:
             if k not in slidingWindowKeys or gtsam.Symbol(self.currentSessionSymbol_, gtsam.Symbol(k).index()).key()-1 not in self.sessionKeys[self.currentSessionSymbol_]:
                 self.covChangeStartKeys_.remove(k)
-                self.covChangeStartKeyDets_.pop(k)
+                if k in self.covChangeStartKeys_:
+                    self.covChangeStartKeyDets_.pop(k)
                 if k in self.covChangeStartKeyJitterBuffer_:
                     self.covChangeStartKeyJitterBuffer_.pop(k)
                 continue
@@ -1542,7 +1572,8 @@ class SessionManager:
         for k in self.covChangeEndKeys_:
             if k not in slidingWindowKeys or gtsam.Symbol(self.currentSessionSymbol_, gtsam.Symbol(k).index()).key()+1 not in self.sessionKeys[self.currentSessionSymbol_]:
                 self.covChangeEndKeys_.remove(k)
-                self.covChangeEndKeyDets_.pop(k)
+                if k in self.covChangeEndKeys_:
+                    self.covChangeEndKeyDets_.pop(k)
                 if k in self.covChangeEndKeyJitterBuffer_:
                     self.covChangeEndKeyJitterBuffer_.pop(k)
                 continue
@@ -1555,7 +1586,7 @@ class SessionManager:
                 pctChange = (self.covChangeEndKeyDets_[k][-2] - self.covChangeEndKeyDets_[k][-1]) / self.covChangeEndKeyDets_[k][-2]
                 print(f"Percent change determinant for end key   {gtsam.Symbol(k).string()} is {pctChange*100:.2f}%")
 
-                if (pctChange < 0.1 and pctChange >= 0.005) or flush:
+                if (pctChange < 0.1 and pctChange >= 0.01) or flush:
                     # Must be below threshold for 2 in a row
                     if self.covChangeEndKeyJitterBuffer_[k] < 1 and not flush:
                         self.covChangeEndKeyJitterBuffer_[k] += 1
@@ -1650,3 +1681,7 @@ class SessionManager:
             return self.currentEstimate_.atPose3(self.lastOdomKey_)
         else:
             raise ValueError(f"Last odom key {gtsam.Symbol(self.lastOdomKey_).string()} not found in currentEstimate or priorValues")
+
+    @property
+    def boundaryNodes(self) -> list[int]:
+        return self.mappingStartKeys_ + self.mappingEndKeys_

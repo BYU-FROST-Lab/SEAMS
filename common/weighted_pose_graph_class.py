@@ -403,24 +403,27 @@ class WeightedPoseGraph:
     # - draw_LC_simple, also plots the starting point and the LC locations
     # - draw_LC_complex, also plots LC connections
     def plot_graph(self, label='Data', color='Blue', draw_LC_simple=False, draw_LC_complex=True):
-        plt.figure()
+        if not hasattr(self, "ax"):
+            self.fig, self.ax = plt.subplots()
+        # plt.figure()
+        self.ax.clear()
         if self.nx_graph is not None:
             print("Plotting graph")
             nodes = self.nx_graph.nodes.data('pose')
             poses_x = [el[1][0] for el in nodes]
             poses_y = [el[1][1] for el in nodes]
-            plt.plot(poses_x, poses_y, '-', label=label, alpha=1, color=color)
-            plt.suptitle('Trajectory')
+            self.ax.plot(poses_x, poses_y, '-', label=label, alpha=1, color=color)
+            self.ax.set_title('Trajectory')
 
             if draw_LC_simple and not draw_LC_complex:
                 poses_LC = list(zip(*self.get_LC_nodes()))[1]
                 poses_LC_x = [el[0] for el in poses_LC]
                 poses_LC_y = [el[1] for el in poses_LC]
-                plt.plot(poses_LC_x, poses_LC_y, '.', label='LC', color='black', alpha=1, markersize=2)
-                plt.plot(poses_x[0], poses_y[0], '*', label='Start', color='black', alpha=1, markersize=10)
+                self.ax.plot(poses_LC_x, poses_LC_y, '.', label='LC', color='black', alpha=1, markersize=2)
+                self.ax.plot(poses_x[0], poses_y[0], '*', label='Start', color='black', alpha=1, markersize=10)
 
             elif draw_LC_complex:
-                plt.plot(poses_x[0], poses_y[0], '*', label='Start', color='black', alpha=1, markersize=10)
+                self.ax.plot(poses_x[0], poses_y[0], '*', label='Start', color='black', alpha=1, markersize=10)
                 label_added = False
                 edges_LC = self.get_LC_edges()
                 for (u, v) in edges_LC:
@@ -431,11 +434,11 @@ class WeightedPoseGraph:
                     poses_LC_y.append(self.nx_graph.nodes[u]['pose'][1])
                     poses_LC_y.append(self.nx_graph.nodes[v]['pose'][1])
                     if not label_added:
-                        plt.plot(poses_LC_x, poses_LC_y, linestyle='-', color='orange', label='LC', alpha=1, marker='o',
+                        self.ax.plot(poses_LC_x, poses_LC_y, linestyle='-', color='orange', label='LC', alpha=1, marker='o',
                                  markeredgecolor='b', markersize=2)
                         label_added = True
                     else:
-                        plt.plot(poses_LC_x, poses_LC_y, linestyle='-', color='orange', alpha=1, marker='o',
+                        self.ax.plot(poses_LC_x, poses_LC_y, linestyle='-', color='orange', alpha=1, marker='o',
                                  markeredgecolor='b', markersize=2)
 
     # def getGraphAsMarkerArray(self, global_frame: str = "map") -> MarkerArray:

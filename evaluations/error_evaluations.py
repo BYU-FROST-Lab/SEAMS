@@ -629,7 +629,7 @@ def main(argv: list[str] | None = None) -> int:
     table = results_to_table(results)
     print(SEP)
     print("Summary")
-    print(table.to_string(index=False, float_format=lambda x: f"{x:.6f}"))
+    print(table.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
 
     if args.save_table:
         table_path = Path(args.save_table)
