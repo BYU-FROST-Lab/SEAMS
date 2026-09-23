@@ -33,7 +33,7 @@ import gtsam
 
 debug = False
 
-from common.FGVizHelpers import createSubGraph
+from common.fgHelpers import createSubGraph
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -52,6 +52,7 @@ class WeightedPoseGraph:
 
         self.nx_graph = nx.Graph()
         self.criteria = criteria
+        self._init_laplacian_storage()
 
         if keysToUse:
             gtsamGraph, gtsamValues = createSubGraph(gtsamGraph, gtsamValues, keysToUse)
@@ -61,6 +62,56 @@ class WeightedPoseGraph:
         for i in range(gtsamGraph.size()):
             f = gtsamGraph.at(i)
             self._add_factor_edge(f)
+
+    # ------------------------------------------------------------------
+    # Incremental Laplacian (NetworkX rebuilds L from scratch every call)
+    # ------------------------------------------------------------------
+
+    def _init_laplacian_storage(self) -> None:
+        self._n = 0
+        self._cap = 0
+        self._key_to_idx: dict[int, int] = {}
+        self._idx_to_key: list[int] = []
+        self._weight_attrs: list[str] = []
+        if 'd_opt' in self.criteria:
+            self._weight_attrs.append('weight_d')
+        if 't_opt' in self.criteria:
+            self._weight_attrs.append('weight_t')
+        if 'e_opt' in self.criteria:
+            self._weight_attrs.append('weight_e')
+        if not self._weight_attrs:
+            self._weight_attrs = ['weight']
+        self._L: dict[str, np.ndarray] = {w: np.zeros((0, 0)) for w in self._weight_attrs}
+        self._trace: dict[str, float] = {w: 0.0 for w in self._weight_attrs}
+
+    def _grow_laplacians(self, min_cap: int) -> None:
+        new_cap = max(16, self._cap * 2, min_cap)
+        for w in self._weight_attrs:
+            L_new = np.zeros((new_cap, new_cap))
+            if self._n:
+                L_new[:self._n, :self._n] = self._L[w][:self._n, :self._n]
+            self._L[w] = L_new
+        self._cap = new_cap
+
+    def _laplacian_view(self, weight: str) -> np.ndarray:
+        return self._L[weight][:self._n, :self._n]
+
+    def _apply_edge_delta(self, k0: int, k1: int, data: dict, sign: float) -> None:
+        """Rank-2 Laplacian update for edge (k0, k1): L += sign * (w on diag, -w off-diag)."""
+        if k0 == k1:
+            return
+        i = self._key_to_idx[k0]
+        j = self._key_to_idx[k1]
+        for attr in self._weight_attrs:
+            w = sign * float(data.get(attr, 0.0))
+            if w == 0.0:
+                continue
+            L = self._L[attr]
+            L[i, i] += w
+            L[j, j] += w
+            L[i, j] -= w
+            L[j, i] -= w
+            self._trace[attr] += 2.0 * w
 
     # ------------------------------------------------------------------
     # Private helpers for node/edge insertion
@@ -73,6 +124,38 @@ class WeightedPoseGraph:
         pose3 = gtsamValues.atPose3(k)
         p = [pose3.x(), pose3.y()]
         self.nx_graph.add_node(k, pose=p, theta=pose3.rotation().yaw())
+        if self._n >= self._cap:
+            self._grow_laplacians(self._n + 1)
+        self._key_to_idx[k] = self._n
+        self._idx_to_key.append(k)
+        self._n += 1
+
+    def _remove_node(self, k: int) -> None:
+        """Remove node k and its incident edges, updating the Laplacian in place."""
+        if not self.nx_graph.has_node(k):
+            return
+        if k in self._key_to_idx:
+            for nbr, data in list(self.nx_graph[k].items()):
+                self._apply_edge_delta(k, nbr, data, sign=-1.0)
+            i = self._key_to_idx[k]
+            last = self._n - 1
+            if i != last:
+                for attr in self._weight_attrs:
+                    L = self._L[attr]
+                    n = self._n
+                    L[[i, last], :n] = L[[last, i], :n]
+                    L[:n, [i, last]] = L[:n, [last, i]]
+                last_key = self._idx_to_key[last]
+                self._idx_to_key[i] = last_key
+                self._key_to_idx[last_key] = i
+            for attr in self._weight_attrs:
+                L = self._L[attr]
+                L[last, :self._n] = 0.0
+                L[:self._n, last] = 0.0
+            self._idx_to_key.pop()
+            del self._key_to_idx[k]
+            self._n -= 1
+        self.nx_graph.remove_node(k)
 
     def _compute_edge_weights(self, info: np.ndarray) -> tuple[float, float, float]:
         """Return (weight_d, weight_t, weight_e) from a 6x6 information matrix."""
@@ -120,8 +203,10 @@ class WeightedPoseGraph:
         idx1 = gtsam.Symbol(k1).index()
         same_chr = gtsam.Symbol(k0).chr() == gtsam.Symbol(k1).chr()
         etype = 0 if (same_chr and abs(idx0 - idx1) == 1) else 1
-        self.nx_graph.add_edge(k0, k1, type=etype, information=info.flatten(),
-                               weight_d=opt_cri_d, weight_t=opt_cri_t, weight_e=opt_cri_e)
+        edge_data = dict(type=etype, information=info.flatten(),
+                         weight_d=opt_cri_d, weight_t=opt_cri_t, weight_e=opt_cri_e)
+        self.nx_graph.add_edge(k0, k1, **edge_data)
+        self._apply_edge_delta(k0, k1, edge_data, sign=1.0)
         return True
 
     # ------------------------------------------------------------------
@@ -132,22 +217,20 @@ class WeightedPoseGraph:
                gtsamGraph: gtsam.NonlinearFactorGraph,
                gtsamValues: gtsam.Values,
                keys_to_keep: list[int]) -> None:
-        """Incrementally sync this graph to the supplied key list.
+        """Incrementally sync this graph and its Laplacian to the supplied keys.
 
         Steps:
-        1. Remove NX nodes (and their incident edges) that are no longer in
-           keys_to_keep.
-        2. Add nodes present in keys_to_keep but missing from the NX graph
+        1. Remove stale nodes (and rank-2-update the Laplacian for their edges).
+        2. Add nodes present in keys_to_keep but missing from the graph
            (in list order, so prior keys are added before window keys).
-        3. Scan the GTSAM factor graph and add any 2-key edges whose both
-           endpoints are now in the NX graph and that do not already exist.
+        3. Scan the GTSAM factor graph and add any new 2-key edges, updating L.
         """
         keep_set = set(keys_to_keep)
 
-        # Step 1: remove stale nodes
+        # Step 1: remove stale nodes (and their Laplacian contributions)
         stale = [k for k in list(self.nx_graph.nodes) if k not in keep_set]
-        if stale:
-            self.nx_graph.remove_nodes_from(stale)
+        for k in stale:
+            self._remove_node(k)
 
         # Step 2: add new nodes (preserving list order)
         for k in keys_to_keep:
@@ -178,71 +261,64 @@ class WeightedPoseGraph:
     def copy_graph(self, frozenG):
         self.nx_graph.clear()
         self.nx_graph = nx.Graph(frozenG)
+        self._rebuild_laplacians_from_nx()
+
+    def _rebuild_laplacians_from_nx(self) -> None:
+        """Recompute stored Laplacians from the current NetworkX graph."""
+        self._init_laplacian_storage()
+        nodes = list(self.nx_graph.nodes)
+        if nodes:
+            self._grow_laplacians(len(nodes))
+        for k in nodes:
+            self._key_to_idx[k] = self._n
+            self._idx_to_key.append(k)
+            self._n += 1
+        for u, v, data in self.nx_graph.edges(data=True):
+            self._apply_edge_delta(u, v, data, sign=1.0)
 
     # Computes the adjacency matrix of the graph (scipy sparse matrices)
     def compute_A(self, weight='weight_d'):
         return nx.adjacency_matrix(self.nx_graph, nodelist=None, weight=weight).toarray()
 
-    # Compute the Laplacian matrix of the graph, Laplacian = Degree - Adjacency
+    # Return the incrementally maintained Laplacian (Degree - Adjacency)
     def compute_L(self, weight='weight_d'):
-        return nx.laplacian_matrix(self.nx_graph, weight=weight).toarray()
+        if weight not in self._L:
+            return nx.laplacian_matrix(self.nx_graph, weight=weight).toarray()
+        return self._laplacian_view(weight).copy()
 
     def compute_average_degree(self, weight='weight_d') -> float:
         """Average weighted node degree: tr(L)/m = (1/m) sum_{k=2}^{m} λ_k."""
-        n = self.nx_graph.number_of_nodes()
+        n = self._n
         if n == 0:
             return 0.0
-        # return float(sum(dict(self.nx_graph.degree(weight=weight)).values()) / n)
+        if weight in self._trace:
+            return float(self._trace[weight] / n)
         return float(np.trace(self.compute_L(weight)) / n)
 
-    # Computes the anchored Laplacian matrix along a random node
-    def compute_anchored_L(self, weight='weight_d'):
-        L = nx.laplacian_matrix(self.nx_graph, weight=weight)
-        idx_to_drop = np.random.randint(0, np.shape(L)[1], 1)
-        if debug:
-            print('Laplacian anchored through index' + format(idx_to_drop))
-        C = L.tocoo()
-        keep = ~np.in1d(C.col, idx_to_drop)
-        C.data, C.row, C.col = C.data[keep], C.row[keep], C.col[keep]
-        C.col -= idx_to_drop.searchsorted(C.col)  # decrement column indices
-        C._shape = (C.shape[0], C.shape[1] - len(idx_to_drop))
-
-        keep = ~np.in1d(C.row, idx_to_drop)
-        C.data, C.row, C.col = C.data[keep], C.row[keep], C.col[keep]
-        C.row -= idx_to_drop.searchsorted(C.row)  # decrement column indices
-        C._shape = (C.shape[0] - len(idx_to_drop), C.shape[1])
-
-        return C.tocsr()
-
-    # Computes all eigenvalues of the Laplacian
     def compute_spectrum(self, weight='weight_d'):
-        return nx.laplacian_spectrum(self.nx_graph, weight=weight)
+        n = self._n
+        if n == 0:
+            return np.array([])
+        return np.linalg.eigvalsh(np.ascontiguousarray(self._laplacian_view(weight)))
 
-    # Compute the non-zero eigenvalues of the Laplacian
     def compute_reduced_spectrum(self, weight='weight_d'):
-        eigen_v = nx.laplacian_spectrum(self.nx_graph, weight=weight)
-        eigen_v_reduced = eigen_v[1:]
-        return eigen_v_reduced
+        return self.compute_spectrum(weight)[1:]
 
     def compute_max_eig(self, weight='weight_d'):
-        return np.max(nx.laplacian_spectrum(self.nx_graph, weight=weight))
+        spec = self.compute_spectrum(weight)
+        return 0.0 if spec.size == 0 else float(np.max(spec))
 
-    # Computes the algebraic connectivity of the graph
     def compute_algcon(self, normalized=False, weight='weight_d'):
         return nx.algebraic_connectivity(self.nx_graph, weight=weight, normalized=normalized, tol=1e-08,
                                          method='tracemin')
-    
-    # Compute the second eigenvalue (Fiedler value) of the Laplacian
+
     def compute_fiedler_value(self, weight='weight_d'):
-        n = self.nx_graph.number_of_nodes()
+        n = self._n
         if n < 2:
             return 0.0
-        eigen_v = nx.laplacian_spectrum(self.nx_graph, weight=weight)
+        eigen_v = np.linalg.eigvalsh(np.ascontiguousarray(self._laplacian_view(weight)))
         return float(eigen_v[1])
 
-    # Computes the Fiedler vector of the graph
-    def compute_fiedler_vector(self, weight='weight_d'):
-        return nx.fiedler_vector(self.nx_graph, weight=weight, normalized=False, tol=1e-08, method='tracemin')
 
     # Gets the edges that represent a loop closure (type 1 edges)
     # Returns an ordered list of loop closure edges (id1, id2) by its order of
@@ -255,17 +331,6 @@ class WeightedPoseGraph:
 
         return sorted(edges_LC, key=itemgetter(1))
 
-    # Gets the node number list of LC
-    def get_LC_nodes_list(self):
-        edges = self.nx_graph.edges.data('type')
-        idx_LC = []
-        for (u, v, wt) in edges:
-            if wt == 1:
-                idx_LC.append([u, v])  # if u not in idx_LC[0] else True
-                # idx_LC.append(v) if v not in idx_LC[1] else True
-        idx_LC.sort(key=lambda x: x[1])
-
-        return idx_LC
 
     # Gets the nodes where there is a LC
     def get_LC_nodes(self):
@@ -299,103 +364,6 @@ class WeightedPoseGraph:
     def get_num_nodes(self):
         return nx.number_of_nodes(self.nx_graph)
 
-    # Gets the neighbors to node "id" within a certain radius
-    def find_neighbors(self, index, radius):
-        nodes = self.nx_graph.nodes.data('pose')
-        poses_xy = []
-
-        # Do not find neighbors in recent nodes
-        th = index - 20
-        limit = max(th, 0)
-        for i in range(0, int(limit)):
-            poses_xy.append(nodes[i])
-
-        # Find radius neighbors
-        if len(poses_xy) > 0:
-            n = min(5, len(poses_xy))
-            neigh = NearestNeighbors(n_neighbors=n, radius=radius)
-            neigh.fit(poses_xy)
-            neighbors = neigh.radius_neighbors([nodes[index]], return_distance=True, sort_results=True)
-            neighbors = neighbors[1][0]  # Only indices
-        else:
-            neighbors = []
-
-        return neighbors
-
-    def find_overlapping_neighbors(self, index, radius):
-
-        nodes = self.nx_graph.nodes.data('pose')
-        nodes_th = self.nx_graph.nodes.data('theta')
-        poses_xy = []
-        pose_current = nodes[index]
-        theta_current = nodes_th[index]
-
-        # Do not find neighbors in recent nodes
-        th = index - 20
-        limit = max(th, 0)
-        for i in range(0, int(limit)):
-            poses_xy.append(nodes[i])
-
-        # Find radius neighbors
-        if len(poses_xy) > 0:
-            n = min(5, len(poses_xy))
-            neigh = NearestNeighbors(n_neighbors=n, radius=radius)
-            neigh.fit(poses_xy)
-            neighbors = neigh.radius_neighbors([pose_current], return_distance=True, sort_results=True)
-            neighbors = neighbors[1][0]  # Only indices
-        else:
-            neighbors = []
-
-        neighbors_overlap = []
-        if len(neighbors) > 0:
-            laser_range = 6
-            p1 = [(pose_current[0] + laser_range), pose_current[1]]
-            p2 = [(pose_current[0] - laser_range), pose_current[1]]
-            p3 = [pose_current[0], (pose_current[1] + laser_range)]
-            p4 = [(pose_current[0] + laser_range*np.cos(0.785398)), (pose_current[1] + laser_range*np.sin(0.785398))]
-            p5 = [(pose_current[0] - laser_range*np.sin(0.785398)), (pose_current[1] + laser_range*np.cos(0.785398))]
-            polygon_tmp = Polygon([pose_current, p1, p4, p3, p5, p2])
-            polygon1 = affinity.rotate(polygon_tmp, theta_current, origin=(pose_current[0], pose_current[1]),
-                                       use_radians=True)
-            # fig, ax = plt.subplots()
-            # self.plot_polygon(ax, polygon1, facecolor='lightblue', edgecolor='lightblue')
-
-            for i in neighbors:
-                pose_neigh = nodes[i]
-                theta_neigh = nodes_th[i]
-                p1 = [(pose_neigh[0] + laser_range), pose_neigh[1]]
-                p2 = [(pose_neigh[0] - laser_range), pose_neigh[1]]
-                p3 = [pose_neigh[0], (pose_neigh[1] + laser_range)]
-                p4 = [(pose_neigh[0] + laser_range*np.cos(0.785398)), (pose_neigh[1] + laser_range*np.sin(0.785398))]
-                p5 = [(pose_neigh[0] - laser_range*np.sin(0.785398)), (pose_neigh[1] + laser_range*np.cos(0.785398))]
-                polygon_tmp = Polygon([pose_neigh, p1, p4, p3, p5, p2])
-                polygon2 = affinity.rotate(polygon_tmp, theta_neigh, origin=(pose_neigh[0], pose_neigh[1]),
-                                           use_radians=True)
-                # self.plot_polygon(ax, polygon2, facecolor='red', edgecolor='red', alpha=0.05)
-
-                intersection = polygon1.intersection(polygon2)
-                A = intersection.area
-
-                if A > 0.15 * polygon1.area:
-                    neighbors_overlap.append(i)
-
-            # ax.set_xlim([-25, 25])
-            # ax.set_ylim([-25, 25])
-            # plt.show()
-        return neighbors_overlap
-
-    @staticmethod
-    def plot_polygon(ax, poly, **kwargs):
-        path = Path.make_compound_path(
-            Path(np.asarray(poly.exterior.coords)[:, :2]),
-            *[Path(np.asarray(ring.coords)[:, :2]) for ring in poly.interiors])
-
-        patch = PathPatch(path, **kwargs)
-        collection = PatchCollection([patch], **kwargs)
-
-        ax.add_collection(collection, autolim=True)
-        ax.autoscale_view()
-        return collection
 
     # Draws the pose graph (i.e. trajectory)
     # Optional parameters:
@@ -441,53 +409,4 @@ class WeightedPoseGraph:
                         self.ax.plot(poses_LC_x, poses_LC_y, linestyle='-', color='orange', alpha=1, marker='o',
                                  markeredgecolor='b', markersize=2)
 
-    # def getGraphAsMarkerArray(self, global_frame: str = "map") -> MarkerArray:
-    #     """
-    #     Saves the graph as visualization_msgs/MarkerArray message for RViZ/ROS visualization
-    #     """
-    #     graph_marker = MarkerArray()
-    #     graph_marker.markers.clear()
-    #     id_markers = 1
-
-    #     n = self.get_no_nodes()
-
-    #     all_t = nx.get_node_attributes(self.nx_graph, 'pose')
-    #     # Add vertices
-    #     for i in range(1, n):
-    #         vertex_marker = createMarker(mtype="sphere", frame=global_frame, ns="graph_ns", colors=[255, 255, 0],
-    #                                      lifetime=15, alpha=1.0, scale=0.1)
-    #         vertex_marker.id = id_markers
-
-    #         if i in all_t:
-    #             t = all_t[i]
-    #             vertex_marker.pose.position.x = t[0]
-    #             vertex_marker.pose.position.y = t[1]
-    #             vertex_marker.pose.position.z = 0.0
-
-    #             graph_marker.markers.append(vertex_marker)
-    #             id_markers += 1
-
-    #     # Add edges
-    #     edge_marker = createMarker(mtype="lines", frame=global_frame, ns="graph_ns", colors=[0, 255, 0],
-    #                                lifetime=15, alpha=1.0, scale=0.1)
-    #     for (u, v, wt) in self.nx_graph.edges.data('type'):
-    #         if u != 0 and v != 0:
-    #             p = Point()
-    #             # Edge's starting position
-    #             t1 = all_t[int(u)]
-    #             p.x = t1[0]
-    #             p.y = t1[1]
-    #             p.z = 0.0
-    #             edge_marker.points.append(p)
-    #             # Edge's ending position
-    #             p = Point()
-    #             t2 = all_t[int(v)]
-    #             p.x = t2[0]
-    #             p.y = t2[1]
-    #             p.z = 0.0
-    #             edge_marker.points.append(p)
-
-    #     edge_marker.id = id_markers
-    #     graph_marker.markers.append(edge_marker)
-
-    #     return graph_marker
+    

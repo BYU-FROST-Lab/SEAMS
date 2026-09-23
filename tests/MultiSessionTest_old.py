@@ -9,12 +9,12 @@ import open3d as o3d
 
 # Local imports
 import gtsam
-import common.FGVizHelpers as fgtools
+import common.fgHelpers as fgtools
 from multiSession.SessionManager import SessionManager
 from params import Params
 from common.customTypes import DecisionType, FixedLagMarginalizationType
 from common.kissicp_odom import KissICPOdom
-import common.FGVizHelpers as fgtools
+import common.fgHelpers as fgtools
 from params.params import Params
 
 # ------------------------------------------------------------

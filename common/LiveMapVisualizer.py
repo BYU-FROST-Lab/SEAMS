@@ -14,7 +14,7 @@ from typing import Optional
 
 import open3d as o3d
 
-import common.FGVizHelpers as fgtools
+import common.fgHelpers as fgtools
 from multiSession.SessionManager import SessionManager
 
 

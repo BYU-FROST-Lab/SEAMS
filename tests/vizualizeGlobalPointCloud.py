@@ -1,7 +1,7 @@
 
 from pathlib import Path
 
-import common.FGVizHelpers as fgtools
+import common.fgHelpers as fgtools
 import open3d as o3d
 import matplotlib.pyplot as plt
 import json

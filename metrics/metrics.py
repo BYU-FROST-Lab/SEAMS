@@ -4,7 +4,7 @@ from scipy.spatial import KDTree
 import gtsam
 from common.customTypes import TreeData, DecisionType, NodeDecision, ClosestSubmapData
 from common.weighted_pose_graph_class import WeightedPoseGraph
-from common.FGVizHelpers import cleanFactorGraph, getRelativeCov, ScanMatch
+from common.fgHelpers import cleanFactorGraph, getRelativeCov, ScanMatch
 from params import Params
 from copy import copy, deepcopy
 import time
@@ -54,10 +54,8 @@ class Metrics:
             self.ComputeOverlapRatio(closestSubmapData)
 
         if DecisionType.INLIER_RATIO in self.method_:
-            if lastInterICPResult is not None:
+            if lastInterICPResult is not None: # Take out for non-cached evaluation
                 self.lastInterFitness = lastInterICPResult.fitness
-            # else:
-            #     self.lastInterFitness = 0
             elif closestSubmapData.currKey == lastPoseKey and closestSubmapData.currScan.has_points() and closestSubmapData.closestSubmap.has_points():
                 reg = ScanMatch(closestSubmapData.currScan, closestSubmapData.closestSubmap, voxelSize=self.params.loopClosure.voxelSize)
                 self.lastInterFitness = reg.fitness
@@ -69,11 +67,9 @@ class Metrics:
 
         if DecisionType.INLIER_RMSE in self.method_:
             num_correspondence_set = 0
-            if lastInterICPResult is not None:
+            if lastInterICPResult is not None: # Take out for non-cached evaluation
                 self.lastInterInlierRMSE = lastInterICPResult.inlier_rmse if len(lastInterICPResult.correspondence_set) > self.params.inlierRMSEPolicy.minCorrespondenceSet else np.inf
                 num_correspondence_set = len(lastInterICPResult.correspondence_set)
-            # else:
-            #     self.lastInterInlierRMSE = np.inf
             elif closestSubmapData.currKey == lastPoseKey and closestSubmapData.currScan.has_points() and closestSubmapData.closestSubmap.has_points():
                 showResult = 2 if self.params.inlierRMSEPolicy.vizScanMatch else 0
                 reg = ScanMatch(closestSubmapData.currScan, closestSubmapData.closestSubmap, voxelSize=self.params.loopClosure.voxelSize, showResult=showResult)
@@ -95,9 +91,11 @@ class Metrics:
             # keys as assembled by SessionManager.UpdateDecisionState.
             self.CreateNXGraph(keysToUse=currentKeys)
 
-            startTime = time.time()
+            startTimeDBar = time.time()
 
             self.ComputeDBar()
+            # if self.params.twoStepConnectivityPolicy.debug:
+            print(f"Metrics: d-bar = {time.time() - startTimeDBar:.3f} s")
 
         if DecisionType.RELATIVE_COVARIANCE in self.method_:
             # Get the relative covariance between the last pose (next one to be marginalized out) and the closest prior pose

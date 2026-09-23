@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import numpy as np
-import common.FGVizHelpers as fgtools
+import common.fgHelpers as fgtools
 import gtsam
 import matplotlib.pyplot as plt
 import copy

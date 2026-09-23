@@ -6,6 +6,7 @@ from common.customTypes import NodeDecision, DecisionType
 
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
+import time
 
 
 class TwoStepConnectivityPolicy(NodeDecisionPolicy):
@@ -82,16 +83,28 @@ class TwoStepConnectivityPolicy(NodeDecisionPolicy):
         lower_2 = mu - 2.0 * sigma
         lower_4 = mu - 4.0 * sigma
 
+        if len(self.d_bar_hist_while_mapping) > 0:
+            d_bar_min = min(self.d_bar_hist_while_mapping)
+            close_enough_to_recovery = d_bar_min + 0.5 * (self.d_bar_hist_while_localizing[-1] - d_bar_min)
+        else:
+            close_enough_to_recovery = np.inf
+
         # lambda_2 is the expensive step; the paper only computes it after the 2-sigma
         # gate, or while mapping so the recovery test can run.
         need_lambda = (
-            d_bar < lower_2
-            or current_state == NodeDecision.MAP
+            (d_bar < lower_2 and current_state != NodeDecision.MAP)
+            or (current_state == NodeDecision.MAP and d_bar > close_enough_to_recovery)
             or cfg.showDLplot
             or self.debug
             or self.twoOption
         )
-        lambda2 = metrics.ComputeFiedler() if need_lambda else np.nan
+        if need_lambda:
+            start_lambda = time.time()
+            lambda2 = metrics.ComputeFiedler()
+            # if self.debug:
+            print(f"  lambda_2 computation time: {time.time() - start_lambda:.3f} s")
+        else:
+            lambda2 = np.nan
         connected = bool(need_lambda) and (lambda2 > self.LAMBDA2_EPS)
 
         self.d_bar_hist_overall.append(d_bar)
@@ -100,8 +113,6 @@ class TwoStepConnectivityPolicy(NodeDecisionPolicy):
 
         if current_state == NodeDecision.MAP:
             self.d_bar_hist_while_mapping.append(d_bar)
-            d_bar_min = min(self.d_bar_hist_while_mapping)
-            close_enough_to_recovery = d_bar_min + 0.5 * (self.d_bar_hist_while_localizing[-1] - d_bar_min)
             # Two-step recovery: d-bar back inside the 2-sigma band AND lambda_2 > 0.
             recovered = (d_bar > lower_4 or d_bar > close_enough_to_recovery) and connected
             ret = NodeDecision.LOCALIZE if recovered else NodeDecision.MAP

@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # Local imports
 import gtsam
 import gtsam_unstable
-import common.FGVizHelpers as fgtools
+import common.fgHelpers as fgtools
 from multiSession.SessionManager import SessionManager
 from params import Params, LoopClosure
 from common.customTypes import DecisionType, FixedLagMarginalizationType
@@ -75,7 +75,7 @@ def run_session(params: Params = Params(),
     #########################################################################################
 
     # MAX_COUNT = 200
-    MAX_COUNT = 5
+    MAX_COUNT = 0
     FIXED_WINDOW = False
     SAVE_FULL_SESSION = True
     SAME_SESSION_COV_CHANGE_PLOT = False
@@ -540,36 +540,36 @@ def main():
     # Hardcode values for testing purposes #
     ########################################
 
-    args.evaluate_decision_types = [
-    #     "NONE",
-    #     "DISTANCE",
-    #     "OVERLAP",
+    # args.evaluate_decision_types = [
+    # # #     "NONE",
+    #     # "DISTANCE",
+    # # #     "OVERLAP",
     #     "INLIER_RATIO",
-    #     "INLIER_RMSE",
-        "TWO_STEP_VALIDATION",
-        "TWO_OPTION",
-    #     "RELATIVE_COVARIANCE",
-    ]   
-    args.policy = "TWO_STEP_VALIDATION"
-    args.viz = "none"
-    args.prior_update_method = 0 # 0: post, 2: continuous
-    args.transition_check = False
+    #     # "INLIER_RMSE",
+    # #     "TWO_STEP_VALIDATION",
+    # #     # "TWO_OPTION",
+    # # #     "RELATIVE_COVARIANCE",
+    # ]   
+    # args.policy = "RELATIVE_COVARIANCE"
+    # args.viz = "none"
+    # args.prior_update_method = 0 # 0: post, 2: continuous
+    # args.transition_check = False
     dirAfterResults = "twoStepEval"
 
-    args.dataset = "nc"
-    args.missions = [
-        # "quad-easy",
-        "quad-medium",
-        "quad-hard",
-        "cloister",
-        "park",
-    ]
+    # args.dataset = "nc"
+    # args.missions = [
+    #     # "quad-easy",
+    #     "quad-medium",
+    #     "quad-hard",
+    #     "cloister",
+    #     "park",
+    # ]
     # # args.load_session_dir = moduleDir / "results/accuracyEval/nc/wellConstrained/continuous/cloister__quad-hard__quad-medium__quad-easy/"
     # # args.load_session_dir = moduleDir / "results/nc/post/cloister__quad-hard__quad-medium__quad-easy"
     # args.load_session_dir = moduleDir / "results/accuracyEval/nc/exact/post/quad-easy"
-    # args.save_session_dir = moduleDir / "results/twostepEval/nc/exact/post/quad-medium__quad-easy"
-    args.load_session_dir = moduleDir / "results/twoStepEval/nc/exact/post/quad-easy"
-    args.save_session_dir = moduleDir / "results/twoStepEval2/nc/exact/post/quad-medium__quad-easy"
+    # args.save_session_dir = moduleDir / "results/relCovRerun/nc/exact/post/quad-medium__quad-easy"
+    # args.load_session_dir = moduleDir / "results/twoStepEval/nc/exact/post/quad-easy"
+    # args.load_session_dir = moduleDir / "results/twoStepEval2/nc/wellConstrained/post/cloister__quad-hard__quad-medium__quad-easy"
     # args.save_session_dir = moduleDir / "results/test/nc/wellConstrained/post/quad-medium__quad-easy"
     # args.load_session_dir = moduleDir / "results/test/nc/wellConstrained/post/quad-medium__quad-easy"
     # args.load_session_dir = moduleDir / "results/accuracyEval/nc/wellConstrained/post/cloister__quad-hard__quad-medium__quad-easy"
@@ -600,7 +600,7 @@ def main():
     #     # "2013-02-23",
     # ]
     # args.load_session_dir = moduleDir / "results/nclt/post/2012-01-08"
-    # args.save_session_dir = moduleDir / "results/accuracyEval/nclt/exact/post/2012-01-15__2012-01-08"
+    # args.save_session_dir = moduleDir / "results/twoStepVal3/nclt/exact/post/2012-01-15__2012-01-08"
     # # # # args.save_session_dir = moduleDir / "results/nclt/1_nclt2ros"
 
     ########################################

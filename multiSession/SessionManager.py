@@ -16,7 +16,7 @@ from dataclasses import asdict
 import yaml
 
 # Local imports
-import common.FGVizHelpers as fgtools
+import common.fgHelpers as fgtools
 import gtsam
 import gtsam_unstable
 from params import Params
@@ -107,6 +107,7 @@ class SessionManager:
         self.covChangeStartKeyJitterBuffer_: dict[int, int] = {}
         self.covChangeEndKeyJitterBuffer_: dict[int, int] = {}
         self.relCovStartKeys_: list[int] = []
+        self.boundaryKeysForPlotting_: set[int] = set()  # Save the keys added via checkDeterminants() for plotting the boundary of the map.
 
         self.loopKeysToIgnore_: set[int]  = set()
         self.lastInterICPResult_ = None
@@ -201,16 +202,18 @@ class SessionManager:
         if self.currentEstimate_.size() == 0:
             for k in self.priorValues_.keys():
                 timestamps[k] = self.currTimestamp_
+            self.IncrementSize(self.priorValues_.keys())
             self.smoother_.update(self.priorGraph_, self.priorValues_, timestamps, [], gtsam.KeySet(self.priorValues_.keys()))
 
-        keysToFreeze = gtsam.KeySet()
+
+        keysToRetain = gtsam.KeySet()
         for k in self.values_.keys():
             timestamps[k] = self.currTimestamp_
             if self.IsAddToPriorSessionKey(k):
-                keysToFreeze.insert(k)
+                keysToRetain.insert(k)
 
         startTime = time.time()
-        result = self.smoother_.update(self.graph_, self.values_, timestamps, [], keysToFreeze)
+        result = self.smoother_.update(self.graph_, self.values_, timestamps, [], keysToRetain)
         if isinstance(optimizationTimeList, list):
             optimizationTimeList.append(time.time() - startTime)
 
@@ -352,6 +355,7 @@ class SessionManager:
         self.decisionState_ = self.decider.DetermineDecisionState(self.metrics_)
         decisionTime = time.time() - startTime
         self.timeToCalcMetricsAndDecision_.append(metricTime + decisionTime)
+        print(f"Total Metric Time: {metricTime + decisionTime:.3f}")
 
         if self.decisionState_ == NodeDecision.INITIALIZE:
             print(f"DecisionState - {self.params.policyType.name}: Waiting for policy initialization...")
@@ -470,10 +474,10 @@ class SessionManager:
         
         return new_graph, new_values
     
-    def RenameKeysInPlace(self, charMap: dict[str, str], keys: list[int], keepKeyIndex:bool=True, freezeNewNodes:bool=True):
+    def RenameKeysInPlace(self, charMap: dict[str, str], keys: list[int], keepKeyIndex:bool=True, retainNewNodes:bool=True) -> list[int]:
 
         if len(keys) == 0:
-            return
+            return []
         
         graph = self.smoother_.getFactors()
         timeMap = self.smoother_.timestamps()
@@ -534,24 +538,24 @@ class SessionManager:
                     factorIndicesToRemove.append(i)
                     break
 
-        # Also need to unfreeze old nodes if frozen so that they will be marginalized out
-        frozenKeys = self.smoother_.frozenKeys()
-        keysToUnfreeze = list(set(keyMap.keys()) & set(frozenKeys))
+        # Also need to release old nodes if retained so that they will be marginalized out
+        retainedKeys = self.smoother_.retainedKeys()
+        keysToRelease = list(set(keyMap.keys()) & set(retainedKeys))
 
-        if freezeNewNodes:
-            keysToFreeze = list(keyMap.values())
+        if retainNewNodes:
+            keysToRetain = list(keyMap.values())
         else:
-            keysToFreeze = []
+            keysToRetain = []
         
         # Update smoother with new graph and values, and remove old factors
-        self.smoother_.update(rekeyedFactors, newValues, timeMap, factorIndicesToRemove, gtsam.KeySet(keysToFreeze), gtsam.KeySet(keysToUnfreeze))
+        self.smoother_.update(rekeyedFactors, newValues, timeMap, factorIndicesToRemove, gtsam.KeySet(keysToRetain), gtsam.KeySet(keysToRelease))
         self.currentEstimate_ = self.smoother_.calculateEstimate()
 
         # If lastOdomKey_ was rekeyed, update it to the new key
         if self.lastOdomKey_ in keyMap:
             self.lastOdomKey_ = keyMap[self.lastOdomKey_]
 
-
+        return list(keyMap.values())
     
     def LoadScans(self, directory:str|Path, symbolChr:str|None=None):
         pcds = fgtools.loadPosePCDs(str(directory))
@@ -682,10 +686,11 @@ class SessionManager:
                             if s.index() < (self.currTimestamp_ - self.params.twoStepConnectivityPolicy.graphWindowLength):
                                 continue
                             keysToRename.append(k)
-                        self.RenameKeysInPlace({self.currentSessionSymbol_: self.addToPriorSymbol_}, keysToRename, freezeNewNodes=True)
-                        key = gtsam.Symbol(self.addToPriorSymbol_, gtsam.Symbol(keysToRename[0]).index()).key()
-                        self.mappingStartKeys_.append(key)
-                        self.covChangeStartKeys_.append(key)
+                        if len(keysToRename) > 0:
+                            self.RenameKeysInPlace({self.currentSessionSymbol_: self.addToPriorSymbol_}, keysToRename, retainNewNodes=True)
+                            key = gtsam.Symbol(self.addToPriorSymbol_, gtsam.Symbol(keysToRename[0]).index()).key()
+                            self.mappingStartKeys_.append(key)
+                            self.covChangeStartKeys_.append(key)
                 elif self.IsCurrentSessionKey(self.lastOdomKey_):
                     self.mappingStartKeys_.append(newKey)
                     self.covChangeStartKeys_.append(newKey)
@@ -696,7 +701,7 @@ class SessionManager:
                 if self.IsAddToPriorSessionKey(self.lastOdomKey_):
                     if self.lastOdomKey_ in self.mappingStartKeys_: # Only one node in mapping because it's the beginning and end
                         self.mappingStartKeys_.remove(self.lastOdomKey_)
-                        self.RenameKeysInPlace({self.addToPriorSymbol_: self.currentSessionSymbol_}, [self.lastOdomKey_], freezeNewNodes=False)
+                        self.RenameKeysInPlace({self.addToPriorSymbol_: self.currentSessionSymbol_}, [self.lastOdomKey_], retainNewNodes=False)
                     else:
                         self.mappingEndKeys_.append(self.lastOdomKey_)
                         self.covChangeEndKeys_.append(self.lastOdomKey_)
@@ -1285,9 +1290,9 @@ class SessionManager:
         # Ensure the that if there were no new nodes added, the addToPrior symbol directory is still created for other policies
         (scans_root / self.addToPriorSymbol_).mkdir(parents=True, exist_ok=True)
         
-        if not gtsam_unstable.serializeGraphToFile(finalGraph, str(directory / "graph.gtsam")):
+        if not fgtools.serializeGraphToFile(finalGraph, str(directory / "graph.gtsam")):
             print(f"Error saving graph to {str(directory / 'graph.gtsam')}")
-        if not gtsam_unstable.serializeValuesToFile(finalValues, str(directory / "values.gtsam")):
+        if not fgtools.serializeValuesToFile(finalValues, str(directory / "values.gtsam")):
             print(f"Error saving values to {str(directory / 'values.gtsam')}")
         if not fgtools.saveOdomTUM(finalTimestamps, finalValues, str(directory / "odom_tum.txt")):
             print(f"Error saving odometry to {str(directory / 'odom_tum.txt')}")
@@ -1297,6 +1302,8 @@ class SessionManager:
             print(f"Error saving timeToCalcMetricsAndDecision to {str(directory / 'timeToCalcMetricsAndDecision.txt')}")
         if not fgtools.SaveListToFile(self.timeToOptimize_, directory / 'timeToOptimize.txt'):
             print(f"Error saving timeToOptimize to {str(directory / 'timeToOptimize.txt')}")
+        if not fgtools.SaveListToFile(list(self.boundaryKeysForPlotting_), directory / "boundaryKeysForPlotting.txt"):
+            print(f"Error saving boundaryKeysForPlotting to {str(directory / 'boundaryKeysForPlotting.txt')}")
 
         # Save params to metadata file
         metadata = fgtools.make_yaml_safe(self.params)
@@ -1340,8 +1347,8 @@ class SessionManager:
         if not graphFile.exists() or not valuesFile.exists() or not scansDir.exists() or not odomFile.exists() or not timestampsFile.exists():
             raise FileNotFoundError(f"One or more files in {directory} are missing. Required files: graph.gtsam, values.gtsam, scans/, odom_tum.txt, timestamps.txt")
 
-        self.priorGraph_ = gtsam_unstable.deserializeGraphFromFile(str(graphFile))
-        self.priorValues_ = gtsam_unstable.deserializeValuesFromFile(str(valuesFile))
+        self.priorGraph_ = fgtools.deserializeGraphFromFile(str(graphFile))
+        self.priorValues_ = fgtools.deserializeValuesFromFile(str(valuesFile))
         self.timestamps_ = fgtools.loadTimestampsWithKeys(str(timestampsFile))
 
         # if useSharedScans:
@@ -1383,8 +1390,6 @@ class SessionManager:
                 self.priorGraph_, self.priorValues_ = self.RenameKeys(chars=self.params.priorSessionSymbolChrs,
                                                                       autoRename=self.params.autoRename,
                                                                       updateOptimization=False)
-        # self.sessionKeys[self.currentSessionSymbol_] = []
-        # self.sessionKeys[self.addToPriorSymbol_] = []
         self.UpdateSmoother(reset=True)
         self.UpdatePriorTree()
         # self.UpdatePriorKeyToFactorIndexDict()
@@ -1550,7 +1555,7 @@ class SessionManager:
                     if self.covChangeStartKeyJitterBuffer_[k] < 1 and not flush:
                         self.covChangeStartKeyJitterBuffer_[k] += 1
                         continue
-                    # Relabel and freeze current session factors and values previous to k
+                    # Relabel and retain current session factors and values previous to k
                     keysToChange = []
                     currKeyIdx = gtsam.Symbol(k).index()
                     for csk in self.sessionKeys[self.currentSessionSymbol_]:
@@ -1560,7 +1565,8 @@ class SessionManager:
                         else:
                             keysToChange.append(csk)
                     
-                    self.RenameKeysInPlace({self.currentSessionSymbol_: self.addToPriorSymbol_}, keys=keysToChange, keepKeyIndex=True, freezeNewNodes=True)
+                    newKeys = self.RenameKeysInPlace({self.currentSessionSymbol_: self.addToPriorSymbol_}, keys=keysToChange, keepKeyIndex=True, retainNewNodes=True)
+                    self.boundaryKeysForPlotting_.update(newKeys)
                     self.covChangeStartKeys_.remove(k)
                     self.covChangeStartKeyDets_.pop(k)
                     self.covChangeStartKeyJitterBuffer_.pop(k)
@@ -1591,7 +1597,7 @@ class SessionManager:
                     if self.covChangeEndKeyJitterBuffer_[k] < 1 and not flush:
                         self.covChangeEndKeyJitterBuffer_[k] += 1
                         continue
-                    # Relabel and freeze current session factors and values previous to k
+                    # Relabel and retain current session factors and values previous to k
                     keysToChange = []
                     currKeyIdx = gtsam.Symbol(k).index()
                     for csk in reversed(self.sessionKeys[self.currentSessionSymbol_]):
@@ -1601,7 +1607,8 @@ class SessionManager:
                         else:
                             keysToChange.append(csk)
                     
-                    self.RenameKeysInPlace({self.currentSessionSymbol_: self.addToPriorSymbol_}, keys=keysToChange, keepKeyIndex=True, freezeNewNodes=True)
+                    newKeys = self.RenameKeysInPlace({self.currentSessionSymbol_: self.addToPriorSymbol_}, keys=keysToChange, keepKeyIndex=True, retainNewNodes=True)
+                    self.boundaryKeysForPlotting_.update(newKeys)
                     self.covChangeEndKeys_.remove(k)
                     self.covChangeEndKeyDets_.pop(k)
                     self.covChangeEndKeyJitterBuffer_.pop(k)

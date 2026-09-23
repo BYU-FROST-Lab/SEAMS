@@ -46,10 +46,6 @@ Example: Add isam2.marginalizeLeaves
 	```
 	 to the `gtsam->nonlinear->nonlinear.i` file in the `class ISAM2 {}` section. 
 	 If you need help figuring out how to do this, I found deepwiki.com to be very useful. Put in the gtsam github link and tell it what function you want to bind and it should be able to direct you with which file to edit and what to add where.
-	I also added the rekey function to the LinearContainerFactor class. However, they don't work and cause the kernel to crash.
-	
-	gtsam::NonlinearFactor* rekey(const std::map<gtsam::Key, gtsam::Key>& rekey_mapping) const;
-	gtsam::NonlinearFactor* rekey(const gtsam::KeyVector& new_keys) const;
 
 2. Rebuild gtsam
 

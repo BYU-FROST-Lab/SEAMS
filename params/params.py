@@ -56,7 +56,7 @@ class InlierRMSEPolicy:
 class TwoStepConnectivityPolicy:
     # Sliding window for the WeightedPoseGraph used to compute the Laplacian,
     # d-bar, and lambda_2. Must be <= Params.fixedLagKeepFrames.
-    graphWindowLength: int = 15
+    graphWindowLength: int = 12
     # Sliding window for the d-bar mu/sigma moving-average history.
     movingAverageLength: int = 5
     # Floor on sigma as a fraction of mu so a perfectly stable d-bar does not
@@ -64,7 +64,7 @@ class TwoStepConnectivityPolicy:
     minRelativeSigma: float = 0.01
     maxConnections: int = 1 # maximum loop closure connections for two step validation
     # twoOption: bool = False
-    showDLplot: bool = True
+    showDLplot: bool = False
     debug: bool = False
 
 # Probabilistic
@@ -73,8 +73,8 @@ class RelativeCovariancePolicy:
     threshold: list[float] = field(
         default_factory=lambda: [1., 1., 1.]    # [x, y, z, det]
         )
-    logDetThreshold: float = -30.0
-    debug: bool = False
+    logDetThreshold: float = -38.0
+    debug: bool = True
 
 
 @dataclass
@@ -87,7 +87,7 @@ class Params:
     fixedLagKeepFrames: int = 30
     fixedLagMarg: FixedLagMarginalizationType = FixedLagMarginalizationType.APPROX_PRIOR
     # fixedLagMarg: FixedLagMarginalizationType = FixedLagMarginalizationType.DENSE
-    linearFactorMaxNodes: int = 2
+    linearFactorMaxNodes: int = 2       # 2 = Binary factor
 
     # Symbol values
     currSessionSymbolChr: str = 'c'
@@ -115,7 +115,7 @@ class Params:
     # Save session params
     moduleDir: Path = Path(__file__).parents[1]
     loadSessionDir: Path |None = None
-    saveSessionDir: Path = moduleDir / "results/nc/default_session"
+    saveSessionDir: Path = moduleDir / f"results/test/{dataset}/{mission}"
 
     # Odometry
     kissICPConfigFile: Path = Path("/home/benb/blocklio/python/params/kiss_icp.yaml")
@@ -126,15 +126,13 @@ class Params:
     gpsCovThreshold: float = 2.0    # meters
     gpsDistThreshold: float = 10.0  # meters
     
-    # Other dataclasses (other structs)
-    icp: ICP = field(default_factory=ICP)
-    loopClosure: LoopClosure = field(default_factory=LoopClosure)
-
     ##################################################################
     # Decision Policy Params
     ##################################################################
 
     # Other dataclasses (other structs)
+    icp: ICP = field(default_factory=ICP)
+    loopClosure: LoopClosure = field(default_factory=LoopClosure)
     distancePolicy: DistancePolicy = field(default_factory=DistancePolicy)
     overlapPolicy: OverlapPolicy = field(default_factory=OverlapPolicy)
     inlierRatioPolicy: InlierRatioPolicy = field(default_factory=InlierRatioPolicy)

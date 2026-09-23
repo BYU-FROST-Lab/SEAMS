@@ -582,6 +582,8 @@ def isBlockCovSmall(marginals: gtsam.Marginals, poses, internalThreshold: Thresh
 def factor_exists_between(graph: gtsam.gtsam.NonlinearFactorGraph, key1, key2):
     for i in range(graph.size()):
         factor = graph.at(i)
+        if factor is None:
+            continue
         f_keys = factor.keys()
         if key1 in f_keys and key2 in f_keys:
             return True
@@ -638,7 +640,8 @@ def createSubGraph(graph: gtsam.NonlinearFactorGraph, values: gtsam.Values, keys
     keys_to_keep_set = set(keys_to_keep)
     for i in range(graph.size()):
         f = graph.at(i)
-
+        if f is None:
+            continue
         f_keys_set = set(f.keys())
         # if len(f_keys_set) > 2:
         #     print(f_keys_set)
@@ -867,6 +870,8 @@ def writeG2oWithPrior(graph, values, filename: str, saveGPS:bool=True):
     with open(filename, "a") as f:
         for i in range(graph.size()):
             factor = graph.at(i)
+            if factor is None:
+                continue
             if isinstance(factor, gtsam.PriorFactorPose3):
                 print("Found Prior")
                 sf6 = lambda x: f"{x:.6g}"
@@ -935,6 +940,8 @@ def rekeyGraphAndBlocks(graph, values, blocks: dict[str, BlockStruct]) \
     new_graph = gtsam.NonlinearFactorGraph()
     for i in range(graph.size()):
         f = graph.at(i)
+        if f is None:
+            continue
         new_keys = [key_mapping[k] for k in f.keys()]
         new_f = f.rekey(new_keys)
         new_graph.push_back(new_f)
@@ -1523,6 +1530,40 @@ def SaveListToFile(listToSave:list, filename:str|Path, sort:bool=False) -> bool:
         for item in listToSave:
             f.write(f"{item}\n")
     return True
+
+def serializeGraphToFile(graph, filename) -> bool:
+    ret = graph.serialize()
+    try:
+        with open(filename, "w") as f:
+            f.write(ret)
+    except Exception as e:
+        print(f"Error occurred while serializing graph to file: {e}")
+        return False
+    return True
+
+def deserializeGraphFromFile(filename):
+    with open(filename, "r") as f:
+        ret = f.read()
+    graph = gtsam.NonlinearFactorGraph()
+    graph.deserialize(ret)
+    return graph
+
+def serializeValuesToFile(values, filename):
+    ret = values.serialize()
+    try:
+        with open(filename, "w") as f:
+            f.write(ret)
+    except Exception as e:
+        print(f"Error occurred while serializing values to file: {e}")
+        return False
+    return True
+
+def deserializeValuesFromFile(filename):
+    with open(filename, "r") as f:
+        ret = f.read()
+    values = gtsam.Values()
+    values.deserialize(ret)
+    return values
     
     
 import io

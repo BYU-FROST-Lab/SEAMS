@@ -3,15 +3,26 @@ from common.customTypes import NodeDecision
 from metrics import Metrics
 import numpy as np
 from params import Params
-from common.FGVizHelpers import getRelativeCov
+from common.fgHelpers import getRelativeCov
 import gtsam
 
 
 class RelativeCovariancePolicy(NodeDecisionPolicy):
+
+    def __init__(self, params: Params):
+        super().__init__(params)
+        self.initialized = False
+        
+        
     def DetermineDecisionState(self, metrics: Metrics) -> NodeDecision:
 
         # if self.params.relativeCovariancePolicy.debug:
         #     print(f"LogDet: {metrics.relCovLogDet}")
+        if not self.initialized:
+            if metrics.relCovLogDet < self.params.relativeCovariancePolicy.logDetThreshold:
+                self.initialized = True
+            else:
+                return NodeDecision.LOCALIZE
 
         if metrics.relCovLogDet < self.params.relativeCovariancePolicy.logDetThreshold:
             return NodeDecision.LOCALIZE
