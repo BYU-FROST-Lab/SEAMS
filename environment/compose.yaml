@@ -9,6 +9,8 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix # Needed to display RViz within the container
       - ${HOME}/blocklio/:/root/blocklio/
       - ${HOME}/gtsam/gtsam/:/home/gtsam/gtsam/
+      - ${HOME}/gtsam/python/:/home/gtsam/python/
+      - ${HOME}/gtsam/matlab/:/home/gtsam/matlab/
       - ${HOME}/gtsam/gtsam_unstable/:/home/gtsam/gtsam_unstable/
       - ${HOME}/yride_env_setup:/yride_env_setup:ro
     environment:

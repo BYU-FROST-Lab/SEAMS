@@ -18,7 +18,6 @@ import yaml
 # Local imports
 import common.fgHelpers as fgtools
 import gtsam
-import gtsam_unstable
 from params import Params
 from common.customTypes import *
 from metrics import Metrics

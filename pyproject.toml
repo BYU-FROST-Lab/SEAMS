@@ -17,12 +17,13 @@ dependencies = [
     "gtsam",
     "networkx>=3.6.1",
     "kiss-icp>=1.3.0",
+    "networkx"
 ]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["common*", "metrics*", "policy*", "params*", "multiSession*", "sparcification*", "rosBagRead*"]
+include = ["common*", "metrics*", "policy*", "params*", "multiSession*", "rosBagRead*"]
 exclude = ["tests*", "environment*",]
 
 [tool.uv.sources]
-gtsam = { path = "wheels/gtsam-4.3a1-cp312-cp312-manylinux_2_39_x86_64.whl" }
+gtsam = { path = "wheels/gtsam-4.3.1-cp312-cp312-manylinux_2_39_x86_64.whl" }

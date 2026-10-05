@@ -1,11 +1,22 @@
-## Python
 
-Multisession development package. Requires **Python 3.12+**.
+# Efficient Multi-Session LiDAR SLAM with Sparse Marginalization and Adaptive Mapping
 
-### Setup
+This repository is the official implementation of the "[Efficient Multi-Session LiDAR SLAM with Sparse Marginalization and Adaptive Mapping](./paper/Efficient%20Multi-Sessioh%20Sn%20LiDAR%20SLAM%20witparse%20Marginalization%20and%20Adaptive%20Mapping%20-%20github.pdf)" paper. It is under review for IROS 2027.
 
-1. Create and activate a virtual environment (conda, mamba, venv, etc.):
 
+## Setup
+
+Tested with **Python 3.12** on **Ubuntu 24.04**.
+
+### Python Environment
+
+1. Create and activate a virtual environment using the python environment manager of your choice(
+  [conda](https://docs.conda.io/projects/conda/en/latest/user-guide/install/linux.html#installing-on-linux), 
+  [mamba](https://mamba.readthedocs.io/en/latest/installation/mamba-installation.html), 
+  [venv](https://docs.python.org/3/library/venv.html), 
+  etc.):
+
+Example using `mamba`:
 ```bash
 mamba create -n multisession python=3.12 pip
 mamba activate multisession
@@ -17,7 +28,7 @@ mamba activate multisession
 pip install -r requirements.txt
 ```
 
-The GTSAM wheel is a pre-built, portable binary built from the Docker setup in `environment/`. It is not available on PyPI. If you rebuild the wheel, update the filename in `requirements.txt` to match the new file in `environment/`. See `environment/README.md` for how to build it.
+> **Note (Sept. 30, 2026)**: In this work, we modified gtsam and merged our changes into their `develop` branch. Thus the python gtsam package needs to be built from scratch. If you are using `python 3.12` on `Ubuntu 24.04`, then our pre-built [gtsam wheel](./wheels/) should work for you. If not, you can rebuild it following the instructions found [here](./environment/README.md). To install/reinstall the local gtsam package run `pip install ./wheels/<wheel_name>.whl --force-reinstall`
 
 3. Install this package in editable mode so local imports resolve:
 
@@ -31,27 +42,12 @@ pip install -e .
 python -c "import gtsam; print(gtsam.__file__)"
 ```
 
-<!-- ### VS Code / Cursor type hints for GTSAM
+The output should show the location of the local gtsam wheel.
 
-The custom GTSAM wheel does not ship type stubs. Stub files live in `environment/typings/`. The workspace `.vscode/settings.json` configures Pylance to use them:
-
-```json
-{
-    "python.analysis.stubPath": "./environment/typings",
-    "python.analysis.typeCheckingMode": "basic",
-    "python.analysis.extraPaths": ["."]
-}
-```
-
-- `stubPath` — tells Pylance where to find `.pyi` stubs for `gtsam`.
-- `extraPaths` — helps resolve imports from the repo root (e.g. `multiSession`, `common`).
-- `typeCheckingMode` — enables basic static checking; set to `"off"` if you only want completions without diagnostics.
-
-Open the repo root as the workspace folder so these relative paths resolve. Reload the window after changing settings if completions do not appear immediately. -->
 
 ### Notebooks
 
-To run `tests/Tests.ipynb` or `sparcification/testNFR.ipynb`, install Jupyter in your environment:
+If you want to run any of the jupyter notebooks (were mainly used during development), install Jupyter in your environment:
 
 ```bash
 pip install jupyter ipykernel ipympl
@@ -59,22 +55,25 @@ pip install jupyter ipykernel ipympl
 
 You may need to reload the window or restart the kernel.
 
-## Running the Multi-Session Test
+## Running Multi-Session Runs
 
-`tests/MultiSessionTest.py` is the main entry point. It streams a rosbag through KISS-ICP odometry, feeds keyframes into a `SessionManager` (a fixed-lag pose-graph smoother with loop closure), and optionally localizes against a previously saved session ("prior map").
+`multiSession/MultiSessionRun.py` is the main entry point. It streams a rosbag through KISS-ICP odometry, feeds keyframes into a `SessionManager` (a fixed-lag pose-graph smoother with loop closure), and optionally localizes against a previously saved session ("prior map").
 
-> **Note:** near the bottom of `main()` there is a block under `# Hardcode values for testing purposes #` that overwrites whatever you pass on the CLI (dataset, missions, policy, load/save dirs, etc.). Comment that block out (or set the values to `None`/defaults) if you want your CLI flags to actually take effect.
+> **Note:** near the bottom of `main()` there is a block under `# Hardcode values for testing purposes #` that overwrites whatever you pass on the CLI (dataset, missions, policy, load/save dirs, etc.). You can add arguments here if desired.
+
+![Pipeline figure](./images/Pipeline%20Figure.png)
 
 ### Basic usage
 
+
 ```bash
-python -m tests.MultiSessionTest -d nc -m quad-easy -p INLIER_RATIO -v mpl
+python -m multiSession.MultiSessionRun -d nc -m quad-easy -p INLIER_RATIO -v mpl
 ```
 
 or, since it's also directly executable:
 
 ```bash
-python tests/MultiSessionTest.py -d nc -m quad-easy quad-medium -p RELATIVE_COVARIANCE
+python multiSession/MultiSessionRun.py -d nc -m quad-easy quad-medium -p RELATIVE_COVARIANCE
 ```
 
 Passing multiple `-m/--missions` runs them **sequentially as a chain**: the first mission starts a fresh session (or loads `--load_session_dir` if given), and each subsequent mission's session is seeded by loading the previous mission's saved output — building up a multi-session prior map over the sequence.
@@ -83,7 +82,7 @@ Passing multiple `-m/--missions` runs them **sequentially as a chain**: the firs
 
 | Flag | Description |
 | --- | --- |
-| `-d`, `--dataset` | Dataset to use: `nc` (Newer College, default), `nclt` (North Campus Long-Term), or `urban` (BYU urban dataset). |
+| `-d`, `--dataset` | Dataset to use: `nc` (Newer College, default), `nclt` (North Campus Long-Term), or `urban` (BYU urban dataset). You can add other datasets as needed. |
 | `-m`, `--missions` | One or more mission/sequence names to run, in order (see [Datasets](#datasets) below for valid names per dataset). |
 | `--prior_update_method` | How/when the prior map is updated with new session data: `0` = only at the end of the session ("post"), `1` = when transitioning from mapping to localization ("incremental"), `2` = continuously whenever in mapping mode ("continuous"). Defaults to `Params.priorUpdateMethod` (`0`). |
 | `-l`, `--load_session_dir` | Directory of a previously saved session to load as the prior map for the first mission in the chain (see [Save / load session format](#save--load-session-format)). Omit to start from scratch. |
@@ -126,7 +125,7 @@ The policy chosen with `-p`/`--policy` (or swept with `-e`) determines *when* a 
 | `priorUpdateMethod` | Same as `--prior_update_method`. |
 | `loadSessionDir` / `saveSessionDir` | Same as `-l`/`-s`. |
 | `kissICPConfigFile` | Path to the KISS-ICP odometry YAML config (`params/kiss_icp.yaml`). |
-| `refineOdometry` | If true, runs an additional scan-match refinement on top of KISS-ICP odometry. |
+| `refineOdometry` | If true, runs an additional scan-match refinement on top of KISS-ICP odometry. Increases runtime. |
 | `useGps` / `gpsCovThreshold` / `gpsDistThreshold` | Whether to fuse GPS factors, and the covariance/distance thresholds used to gate them. |
 | `icp.voxelSize` | Downsampling voxel size for ICP point clouds (`None` disables downsampling). |
 | `loopClosure.*` | Loop-closure search/registration tuning: search-window sizes (`intraNearKeyFrames`, `interNearKeyFramesCurrent`, `interNearKeyFramesPrior`), `voxelSize`, `fitnessThreshold`, `rmseThreshold`, `maxCorrespondenceDist`, and debug visualization flags (`showScanMatchResult`, `showResultSkipFrames`). |
@@ -136,9 +135,9 @@ The policy chosen with `-p`/`--policy` (or swept with `-e`) determines *when* a 
 Datasets are selected with `-d`/`--dataset`. The root directory for each dataset is currently **hardcoded per-machine** in `main()` in `tests/MultiSessionTest.py` (around the `if args.dataset == "nc": ...` block) — edit those paths to match your machine before running:
 
 ```python
-nc_data_dir = Path("/home/benb/data_sets/NewerCollege/ros2")
-urban_data_dir = Path("/home/benb/data_byu/bags/urban")
-nclt_data_dir = Path("/home/benb/data_sets/NCLT")           # or .../NCLT/nclt2ros for most missions
+nc_data_dir = Path.home() / "data_sets/NewerCollege/ros2"
+urban_data_dir = Path.home() / "data_byu/bags/urban"
+nclt_data_dir = Path.home() / "data_sets/NCLT"           # or .../NCLT/nclt2ros for most missions
 ```
 
 For each mission, the code expects:
@@ -146,6 +145,7 @@ For each mission, the code expects:
 - **A ROS2 bag** (a `ros2 bag` directory, read via `rosbags.highlevel.AnyReader`) containing a recognized lidar topic and, optionally, a GPS topic:
   - Lidar topics recognized: `/os_cloud_node/points`, `/os1_cloud_node/points`, `/ouster_top/points`, `/ouster/points`, `/velodyne_points`.
   - GPS topics recognized: `/navsat/fix`, `/inertial_sense/gps1/NavSatFix`.
+  Other topics can be added in [readFromRosbags.py](rosBagRead/readFromRosbags.py).
 - **A ground-truth file** in TUM-like CSV format: either 7 columns (`t, x, y, z, roll, pitch, yaw`) or 8 columns (`t, x, y, z, q_x, q_y, q_z, q_w`), comma- or space-delimited.
 
 Per-dataset layout expected by `main()`:
@@ -154,8 +154,7 @@ Per-dataset layout expected by `main()`:
 | --- | --- | --- |
 | `nc` (Newer College) | `<nc_data_dir>/<mission>` | `<nc_data_dir>/ground_truth_tum/gt-nc-<mission>.csv` |
 | `urban` (BYU) | `<urban_data_dir>/<mission>` | `<urban_data_dir>/groundTruth/<mission>_gt/optimized_poses.txt` |
-| `nclt` (`2012-01-08_bin` mission) | `<nclt_data_dir>/2012-01-08/2012-01-08_bin_ros2` | `<nclt_data_dir>/2012-01-08/groundtruth_2012-01-08.csv` |
-| `nclt` (other missions) | `<nclt_data_dir>/nclt2ros/rosbags/<mission>/ros2_bag` | `<nclt_data_dir>/nclt2ros/raw_data/<mission>/ground_truth/groundtruth_<mission>.csv` |
+| `nclt` | `<nclt_data_dir>/nclt2ros/rosbags/<mission>/ros2_bag` | `<nclt_data_dir>/nclt2ros/raw_data/<mission>/ground_truth/groundtruth_<mission>.csv` |
 
 If a bag or ground-truth file is missing, `main()` prints a warning but still attempts the run (it will fail once the bag reader can't find the path).
 

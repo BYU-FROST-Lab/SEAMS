@@ -13,21 +13,9 @@
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 import networkx as nx
 import numpy as np
-from sklearn.neighbors import NearestNeighbors
 from operator import itemgetter
 
-# from visualization_msgs.msg import MarkerArray
-# from geometry_msgs.msg import Point
-
-# from functions import createMarker
-
-from shapely.geometry import Polygon
-from shapely import affinity
-
 import matplotlib.pyplot as plt
-from matplotlib.path import Path
-from matplotlib.patches import PathPatch
-from matplotlib.collections import PatchCollection
 
 import gtsam
 

@@ -17,7 +17,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Local imports
 import gtsam
-import gtsam_unstable
 import common.fgHelpers as fgtools
 from multiSession.SessionManager import SessionManager
 from params import Params, LoopClosure
@@ -26,7 +25,6 @@ from common.LiveMapVisualizer import LiveMapVisualizer
 from common.kissicp_odom import KissICPOdom
 from params.params import Params
 from rosBagRead.readFromRosbags import ReadTopicsFromRosbag
-from sparcification.NFR import GraphSparsification
 from common.groundTruthLoader import GroundTruthLoader
 
 # ------------------------------------------------------------
@@ -75,7 +73,7 @@ def run_session(params: Params = Params(),
     #########################################################################################
 
     # MAX_COUNT = 200
-    MAX_COUNT = 0
+    MAX_COUNT = 5
     FIXED_WINDOW = False
     SAVE_FULL_SESSION = True
     SAME_SESSION_COV_CHANGE_PLOT = False
@@ -550,24 +548,24 @@ def main():
     # #     # "TWO_OPTION",
     # # #     "RELATIVE_COVARIANCE",
     # ]   
-    # args.policy = "RELATIVE_COVARIANCE"
+    args.policy = "INLIER_RATIO"
     # args.viz = "none"
-    # args.prior_update_method = 0 # 0: post, 2: continuous
-    # args.transition_check = False
+    args.prior_update_method = 0 # 0: post, 2: continuous
+    args.transition_check = True
     dirAfterResults = "twoStepEval"
 
-    # args.dataset = "nc"
-    # args.missions = [
-    #     # "quad-easy",
-    #     "quad-medium",
-    #     "quad-hard",
-    #     "cloister",
-    #     "park",
-    # ]
+    args.dataset = "nc"
+    args.missions = [
+        # "quad-easy",
+        # "quad-medium",
+        "quad-hard",
+        # "cloister",
+        # "park",
+    ]
     # # args.load_session_dir = moduleDir / "results/accuracyEval/nc/wellConstrained/continuous/cloister__quad-hard__quad-medium__quad-easy/"
     # # args.load_session_dir = moduleDir / "results/nc/post/cloister__quad-hard__quad-medium__quad-easy"
-    # args.load_session_dir = moduleDir / "results/accuracyEval/nc/exact/post/quad-easy"
-    # args.save_session_dir = moduleDir / "results/relCovRerun/nc/exact/post/quad-medium__quad-easy"
+    args.load_session_dir = moduleDir / "results/accuracyEval/nc/exact/post/quad-easy"
+    args.save_session_dir = moduleDir / "results/tests/nc/exact/post/quad-hard__quad-easy"
     # args.load_session_dir = moduleDir / "results/twoStepEval/nc/exact/post/quad-easy"
     # args.load_session_dir = moduleDir / "results/twoStepEval2/nc/wellConstrained/post/cloister__quad-hard__quad-medium__quad-easy"
     # args.save_session_dir = moduleDir / "results/test/nc/wellConstrained/post/quad-medium__quad-easy"
@@ -614,24 +612,20 @@ def main():
     for i, mission in enumerate(args.missions):
 
         if args.dataset == "nc":
-            nc_data_dir = Path("/home/benb/data_sets/NewerCollege/ros2")
+            nc_data_dir = Path.home() / "data_sets/NewerCollege/ros2"
             bag_file = nc_data_dir / mission
             gt_file = nc_data_dir / "ground_truth_tum" / f"gt-nc-{mission}.csv"
 
         elif args.dataset == "urban":
-            urban_data_dir = Path("/home/benb/data_byu/bags/urban")
+            urban_data_dir = Path.home() / "data_byu/bags/urban"
             bag_file = urban_data_dir / mission
             gt_file = urban_data_dir / "groundTruth" / f"{mission}_gt" / "optimized_poses.txt"
 
         elif args.dataset == "nclt":
-            if mission == "2012-01-08_bin":
-                nclt_data_dir = Path("/home/benb/data_sets/NCLT")
-                bag_file = nclt_data_dir / "2012-01-08/2012-01-08_bin_ros2"
-                gt_file = nclt_data_dir / "2012-01-08/groundtruth_2012-01-08.csv"
-            else:
-                nclt_data_dir = Path("/home/benb/data_sets/NCLT/nclt2ros/")
-                bag_file = nclt_data_dir / f"rosbags/{mission}/ros2_bag/"
-                gt_file = nclt_data_dir / f"raw_data/{mission}/ground_truth/groundtruth_{mission}.csv"
+            nclt_data_dir = Path.home() / "data_sets/NCLT/nclt2ros/"
+            bag_file = nclt_data_dir / f"rosbags/{mission}/ros2_bag/"
+            gt_file = nclt_data_dir / f"raw_data/{mission}/ground_truth/groundtruth_{mission}.csv"
+
         else:
             raise ValueError("Need to specify a dataset")
 
