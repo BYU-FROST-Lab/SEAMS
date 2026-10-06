@@ -118,7 +118,7 @@ class Params:
     saveSessionDir: Path = moduleDir / f"results/test/{dataset}/{mission}"
 
     # Odometry
-    kissICPConfigFile: Path = Path("/home/benb/blocklio/python/params/kiss_icp.yaml")
+    kissICPConfigFile: Path = moduleDir / "params/kiss_icp.yaml"
     refineOdometry: bool = False    # Refine the odometry using an additional scan match after kiss-icp
 
     # GPS

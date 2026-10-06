@@ -22,6 +22,18 @@ def _orthonormalize_se3(T: np.ndarray) -> np.ndarray:
     T[:3, :3] = R_ortho
     return T
 
+def _deskew_timestamps(xyz_points: np.ndarray, point_times: np.ndarray | None) -> np.ndarray:
+    """
+    Return per point times for KissICP's deskewing, or an empty array (which disables deskewing)
+    if there are no usable times for this scan.
+    """
+    if point_times is None or len(point_times) != len(xyz_points) or len(point_times) == 0:
+        return np.array([])
+    point_times = np.asarray(point_times, dtype=np.float64)
+    if not np.isfinite(point_times).all() or point_times.max() <= point_times.min():
+        return np.array([])
+    return point_times
+
 class KissICPOdom:
     def __init__(self, 
                  lidar_scan_path:str|Path|None=None,
@@ -83,10 +95,14 @@ class KissICPOdom:
         self.relative_poses_ = []
         self.scan_count_ = 0
     
-    def process_next_keyframe(self, xyz_points: np.ndarray|None = None) -> tuple[gtsam.Pose3, gtsam.Pose3|None, np.ndarray]:
+    def process_next_keyframe(self, xyz_points: np.ndarray|None = None, point_times: np.ndarray|None = None) -> tuple[gtsam.Pose3, gtsam.Pose3|None, np.ndarray]:
         '''
         Process lidar frames found in 'lidar_scan_path' passed to constructor.
         Processes the next frame sequentially each time this function is called.
+
+        :params xyz_points: Nx3 points of the next scan when not using 'lidar_scan_path'
+        :params point_times: (Optional) per point times (N,) used to deskew the scan. Any units, since KissICP
+            normalizes them within the scan. If None or empty, the scan is not deskewed.
         '''
         if self.dataset_ is not None:
             # Load next lidar information from dataset
@@ -95,9 +111,9 @@ class KissICPOdom:
             # Register the frame with the local map
             deskewed_points, source = self.odometry_.register_frame(frame, timestamps)
         elif xyz_points is not None:
-            # Register the frame with the local map
-            fake_timestamps = np.array([]) # Internal KissICP optimization tracking expects an empty array to disable deskewing
-            deskewed_points, source = self.odometry_.register_frame(xyz_points, fake_timestamps)
+            # Register the frame with the local map. KissICP expects an empty array to disable deskewing
+            timestamps = _deskew_timestamps(xyz_points, point_times)
+            deskewed_points, source = self.odometry_.register_frame(xyz_points, timestamps)
         else:
             raise ValueError("No dataset or xyz_points provided for processing.")
         
@@ -164,13 +180,15 @@ class KissICPOdomLive:
         self.relative_poses_ = []
         self.scan_count_ = 0
     
-    def process_next_keyframe(self, xyz_points: np.ndarray) -> tuple[gtsam.Pose3, gtsam.Pose3 | None]:
+    def process_next_keyframe(self, xyz_points: np.ndarray, point_times: np.ndarray | None = None) -> tuple[gtsam.Pose3, gtsam.Pose3 | None]:
         """
         Processes a raw live structured point cloud array matrix with explicit 
         geometric singularity protection gates.
+
+        :params point_times: (Optional) per point times (N,) used to deskew the scan. If None or empty, the scan is not deskewed.
         """
         # Internal KissICP optimization tracking expects an empty array to disable deskewing
-        fake_timestamps = np.array([]) 
+        timestamps = _deskew_timestamps(xyz_points, point_times)
 
         # =====================================================================
         # HARDENED SINGULARITY GUARD: FORCE INITIAL IDENTITY PASSTHROUGH
@@ -178,7 +196,7 @@ class KissICPOdomLive:
         if self.scan_count_ == 0:
             try:
                 self.odometry_.last_delta = np.eye(4)
-                _, _ = self.odometry_.register_frame(xyz_points, fake_timestamps)
+                _, _ = self.odometry_.register_frame(xyz_points, timestamps)
             except Exception as e:
                 pass
                 
@@ -193,7 +211,7 @@ class KissICPOdomLive:
         # =====================================================================
 
         # Standard pipeline pass for all subsequent frames (where voxel map is populated)
-        processed_frame, source = self.odometry_.register_frame(xyz_points, fake_timestamps)
+        processed_frame, source = self.odometry_.register_frame(xyz_points, timestamps)
 
         # 1. Capture the new COMPOSED global pose accumulated by KissICP
         composed_pose = gtsam.Pose3(self.odometry_.last_pose.copy())

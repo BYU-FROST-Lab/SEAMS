@@ -73,7 +73,7 @@ def run_session(params: Params = Params(),
     #########################################################################################
 
     # MAX_COUNT = 200
-    MAX_COUNT = 5
+    MAX_COUNT = 0
     FIXED_WINDOW = False
     SAVE_FULL_SESSION = True
     SAME_SESSION_COV_CHANGE_PLOT = False
@@ -190,7 +190,8 @@ def run_session(params: Params = Params(),
                 # gtPose = T_lidar2body.compose(gtPose)
             print(f"Initial pose is: \n{gtPose}")
             kissOdom.set_initial_pose(gtPose)
-        composedPose_odom, relPose_odom, deskewed_points = kissOdom.process_next_keyframe(msg_return) # Poses are returned in the odometry frame, not the robot's frame
+        xyz_points, point_times = msg_return
+        composedPose_odom, relPose_odom, deskewed_points = kissOdom.process_next_keyframe(xyz_points, point_times) # Poses are returned in the odometry frame, not the robot's frame
         pointCloud = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(deskewed_points))
 
         if firstPass:
@@ -548,24 +549,25 @@ def main():
     # #     # "TWO_OPTION",
     # # #     "RELATIVE_COVARIANCE",
     # ]   
-    args.policy = "INLIER_RATIO"
+    args.policy = "DISTANCE"
     # args.viz = "none"
+    # args.viz = "o3d"
     args.prior_update_method = 0 # 0: post, 2: continuous
-    args.transition_check = True
-    dirAfterResults = "twoStepEval"
+    args.transition_check = False
+    dirAfterResults = "test_3"
 
-    args.dataset = "nc"
-    args.missions = [
-        # "quad-easy",
-        # "quad-medium",
-        "quad-hard",
-        # "cloister",
-        # "park",
-    ]
+    # args.dataset = "nc"
+    # args.missions = [
+    #     # "quad-easy",
+    #     # "quad-medium",
+    #     "quad-hard",
+    #     # "cloister",
+    #     # "park",
+    # ]
     # # args.load_session_dir = moduleDir / "results/accuracyEval/nc/wellConstrained/continuous/cloister__quad-hard__quad-medium__quad-easy/"
     # # args.load_session_dir = moduleDir / "results/nc/post/cloister__quad-hard__quad-medium__quad-easy"
-    args.load_session_dir = moduleDir / "results/accuracyEval/nc/exact/post/quad-easy"
-    args.save_session_dir = moduleDir / "results/tests/nc/exact/post/quad-hard__quad-easy"
+    # args.load_session_dir = moduleDir / "results/accuracyEval/nc/exact/post/quad-easy"
+    # args.save_session_dir = moduleDir / "results/tests/nc/exact/post/quad-hard__quad-easy"
     # args.load_session_dir = moduleDir / "results/twoStepEval/nc/exact/post/quad-easy"
     # args.load_session_dir = moduleDir / "results/twoStepEval2/nc/wellConstrained/post/cloister__quad-hard__quad-medium__quad-easy"
     # args.save_session_dir = moduleDir / "results/test/nc/wellConstrained/post/quad-medium__quad-easy"
@@ -577,12 +579,16 @@ def main():
     # # args.save_session_dir = moduleDir / "results/marginalizationEvaluation/nc/approx__quad-hard__quad-easy"
     # args.save_session_dir = moduleDir / "results/accuracyEval/nc/exact/continuous/quad-easy/"
 
-    # args.dataset = "urban"
-    # args.mission = "block1"
+    args.dataset = "urban"
+    args.missions = [
+        # "block0",
+        # "block1",
+        "block2",
+    ]
     # args.load_session_dir = None
     # args.load_session_dir = moduleDir / "results/urban/block0/"
     # args.save_session_dir = moduleDir / "results/urban/block0"
-    # args.load_session_dir = moduleDir / "results/test/urban/block1_prior_block0/"
+    args.load_session_dir = moduleDir / "results/test_3/urban/exact/post/block1__block0/"
     # args.load_session_dir = moduleDir / "policy_evaluation/urban2/block1_prior_block0/"
     # args.load_session_dir = moduleDir / "policy_evaluation/urban2/block0"
     # args.viz = "none"

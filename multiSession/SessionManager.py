@@ -988,7 +988,7 @@ class SessionManager:
         rmse = reg.inlier_rmse
         transFinal = reg.transformation
         if self.params.loopClosure.debug:
-            print(f"Loop Check between keys {gtsam.Symbol(currKey).string()} and {gtsam.Symbol(key).string()} fitness: {fit:.4f} inliers: {rmse:.4f} correspondence len: {len(reg.correspondence_set)}")
+            print(f"Loop Check between keys {gtsam.Symbol(currKey).string()} and {gtsam.Symbol(keys[0]).string()} fitness: {fit:.4f} inliers: {rmse:.4f} correspondence len: {len(reg.correspondence_set)}")
 
         if fit > self.params.loopClosure.fitnessThreshold and rmse < self.params.loopClosure.rmseThreshold:
             foundLoop = True

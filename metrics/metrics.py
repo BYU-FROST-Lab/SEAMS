@@ -46,7 +46,12 @@ class Metrics:
 
         if DecisionType.DISTANCE in self.method_:
             if priorTreeData is not None:
-                self.GetClosestKey(priorTreeData, values.atPose3(lastPoseKey))
+                currentPose = values.atPose3(lastPoseKey)
+                self.GetClosestKey(priorTreeData, currentPose)
+                closestPose = values.atPose3(self.closestPriorKey)
+                closestDistance = np.linalg.norm(closestPose.between(currentPose).translation())
+                if abs(closestDistance - self.closestDistance) > 1.0:
+                    print(f"WARNING: Metrics: Prior nodes have significantly changed distance: {closestDistance} (previous: {self.closestDistance})")
             else:
                 self.closestDistance = np.inf
 

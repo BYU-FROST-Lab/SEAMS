@@ -22,6 +22,24 @@ from .jitter_buffer import JitterBuffer, BufferedMessage
 # Grab the standard ROS 2 type definitions
 from rosbags.typesys import Stores, get_typestore
 typestore = get_typestore(Stores.ROS2_HUMBLE)
+
+# sensor_msgs/PointField datatypes
+POINT_FIELD_DTYPES = {
+    1: np.int8,
+    2: np.uint8,
+    3: np.int16,
+    4: np.uint16,
+    5: np.int32,
+    6: np.uint32,
+    7: np.float32,
+    8: np.float64,
+}
+
+# Per point time field names used by common lidar drivers (in order of preference)
+#   t: Ouster (uint32 ns since the start of the scan)
+#   time: Velodyne/Robosense drivers (float32 s since the start of the scan)
+#   timestamp: Hesai (float64 absolute s)
+POINT_TIME_FIELD_NAMES = ("t", "time", "timestamp", "timestamps", "offset_time")
     
 
 # =========================================================================
@@ -52,6 +70,7 @@ class ReadTopicsFromRosbag:
         }
         
         self.buffer = JitterBuffer()
+        self.warned_no_point_times: set[str] = set()
         self.exit_flag = False 
         self.filter_started = False 
         self.first_msg_timestamp = None 
@@ -72,26 +91,61 @@ class ReadTopicsFromRosbag:
         
 
     def parse_lidar_measurements(self, connection, msg):
+        '''
+        Return (xyz_points, point_times)
+           xyz_points: Nx3 float32 array
+           point_times: per point times (N,) float64 relative to the earliest point in the scan, or an empty
+                        array if the message has no per point time field (e.g. NCLT velodyne bags)
+        '''
 
-        # 1. Unpack raw point cloud array bytes from the rosbag message
-        num_points = msg.width * msg.height
+        # 1. Unpack the fields of the raw point cloud using their names and offsets
+        fields = {f.name: f for f in msg.fields if f.count == 1 and f.datatype in POINT_FIELD_DTYPES}
+        if not all(name in fields for name in ("x", "y", "z")):
+            raise ValueError(f"Point cloud on {connection.topic} has no x, y, z fields. Fields: {[f.name for f in msg.fields]}")
+        timeField = next((name for name in POINT_TIME_FIELD_NAMES if name in fields), None)
+
+        names = ["x", "y", "z"] + ([timeField] if timeField else [])
+        endian = ">" if msg.is_bigendian else "<"
+        pointDtype = np.dtype({
+            "names": names,
+            "formats": [np.dtype(POINT_FIELD_DTYPES[fields[n].datatype]).newbyteorder(endian) for n in names],
+            "offsets": [fields[n].offset for n in names],
+            "itemsize": msg.point_step,
+        })
         raw_data = np.frombuffer(msg.data, dtype=np.uint8)
-        point_bytes = raw_data.reshape(num_points, msg.point_step).copy()
-        xyz_bytes = point_bytes[:, 0:12].copy()
-        xyz_points = xyz_bytes.view(dtype=np.float32).reshape(num_points, 3)
-        
+        if msg.row_step != msg.width * msg.point_step:
+            # Drop any padding at the end of each row
+            raw_data = raw_data.reshape(msg.height, msg.row_step)[:, :msg.width * msg.point_step].copy()
+        points = raw_data.view(pointDtype).reshape(-1)
+
+        xyz_points = np.stack([points["x"], points["y"], points["z"]], axis=1).astype(np.float32)
+        point_times = points[timeField].astype(np.float64) if timeField else np.empty(0, dtype=np.float64)
+
         # R_body_lidar = self.T_body_lidar.rotation().matrix()
         # xyz_points = xyz_points @ R_body_lidar.T
 
         # 2. Filter out non-finite (NaN / Inf) returns
         clean_mask = np.isfinite(xyz_points).all(axis=1)
         xyz_clean = xyz_points[clean_mask]
+        if point_times.size:
+            point_times = point_times[clean_mask]
 
         # 3. Dense Point Gate: Protect voxel allocation scaling
         if xyz_clean.shape[0] < 50:
-            return np.empty((0, 3), dtype=np.float32)  # Return an empty array if too few points
+            return np.empty((0, 3), dtype=np.float32), np.empty(0, dtype=np.float64)  # Return an empty array if too few points
 
-        return xyz_clean
+        # 4. Only keep per point times that can be used for deskewing. KissICP normalizes the times to [0, 1]
+        #    within each scan, so the units don't matter but the times must vary across the scan.
+        if point_times.size:
+            if not np.isfinite(point_times).all() or point_times.max() <= point_times.min():
+                point_times = np.empty(0, dtype=np.float64)
+            else:
+                point_times = point_times - point_times.min()
+        if not point_times.size and connection.topic not in self.warned_no_point_times:
+            self.warned_no_point_times.add(connection.topic)
+            print(f"Warning: {connection.topic} has no usable per point time field. Scans will not be deskewed.")
+
+        return xyz_clean, point_times
 
     def parse_gps_measurements(self, connection, msg):
         '''
@@ -113,7 +167,7 @@ class ReadTopicsFromRosbag:
         '''
         Return (topic, timestamp, msg_return)
         msg_return:
-           lidar: xyz_points (Nx3)
+           lidar: (xyz_points (Nx3), point_times (N,) or empty if the scan has no per point times)
            gps: lat, long, alt, cov, cov_type as list of len 5 
         '''
         # Determine total rosbag duration once
@@ -194,7 +248,7 @@ class ReadTopicsFromRosbag:
 
                             self.increment_counter += self.increment_counter_step
                     # msg_return:
-                    #   xyz_points for lidar (Nx3)
+                    #   (xyz_points (Nx3), point_times (N,) or empty) for lidar
                     #   lat, long, alt, cov, cov_type as list of len 5
                     yield connection.topic, timestamp, msg_return
                 if self.exit_flag:
@@ -271,7 +325,8 @@ def main():
     
     for topic, timestamp, msg_return in mission.next_message():
         if topic in mission.lidar_topics:
-            kiss_odom.process_next_keyframe(msg_return)
+            xyz_points, point_times = msg_return
+            kiss_odom.process_next_keyframe(xyz_points, point_times)
         elif topic in mission.gps_topics:
             print(f"{timestamp}: {msg_return}")
         else:
