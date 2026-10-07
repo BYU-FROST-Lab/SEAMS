@@ -9,6 +9,7 @@ import matplotlib.colors as mcolors
 import numpy as np
 np.set_printoptions(linewidth=np.inf, suppress=False)
 import os
+import re
 import open3d as o3d
 import copy
 from typing import Any
@@ -1040,6 +1041,197 @@ def loadSymbolPCDs(scans_root: str | Path,
                 pcds[gtsam_key] = pcd
     else:
         pcds = loadPosePCDs(str(scans_root))
+
+    return pcds
+
+
+#####################################################################################
+# Global scans store: {scansRoot}/{dataset}/{mission}/{timestamp_us}.pcd
+#####################################################################################
+
+def timestampToMicroseconds(t: float) -> int:
+    '''
+    Convert a timestamp in seconds to integer microseconds, rounding to the nearest microsecond.
+    Uses the same "%.6f" formatting as saveTimestampsWithKeys so a timestamp in memory and the
+    same timestamp read back from timestamps.txt always map to the same integer.
+    '''
+    return int(f"{t:.6f}".replace(".", ""))
+
+
+def stripPolicyDir(sessionDir: str | Path) -> Path:
+    '''If sessionDir is a policy sub-directory (e.g. .../quad-hard__quad-easy/INLIER_RATIO), return its parent.'''
+    from common.customTypes import DecisionType
+    sessionDir = Path(sessionDir)
+    if sessionDir.name in DecisionType.__members__:
+        return sessionDir.parent
+    return sessionDir
+
+
+def missionsFromSessionDir(sessionDir: str | Path) -> list[str]:
+    '''
+    Parse a session directory name of the form "newMission__previousMission__...__firstMission".
+    A policy sub-directory is stripped first, as is a trailing "_<n>" added when a save directory
+    already existed (e.g. "quad-easy_2").
+
+    Returns the missions in the order they were run (oldest first).
+    '''
+    name = stripPolicyDir(sessionDir).name
+    name = re.sub(r"_\d+$", "", name)
+    return list(reversed(name.split("__")))
+
+
+def missionSymbolMap(sessionDir: str | Path) -> dict[str, str]:
+    '''
+    Map gtsam symbol characters to mission names from a session directory name.
+    e.g. "park__cloister__quad-hard__quad-medium__quad-easy" ->
+         {A: quad-easy, B: quad-medium, C: quad-hard, D: cloister, E: park}
+    '''
+    return {chr(ord('A') + i): m for i, m in enumerate(missionsFromSessionDir(sessionDir))}
+
+
+def readSessionDataset(sessionDir: str | Path, default: str | None = None) -> str | None:
+    '''Read the dataset name from a session's metadata.yaml, falling back to default.'''
+    import yaml
+    metadataFile = Path(sessionDir) / "metadata.yaml"
+    if metadataFile.is_file():
+        with open(metadataFile, "r") as f:
+            metadata = yaml.safe_load(f) or {}
+        if metadata.get("dataset"):
+            return str(metadata["dataset"])
+    return default
+
+
+def globalScanPath(scansRoot: str | Path, dataset: str, mission: str, timestamp: float) -> Path:
+    return Path(scansRoot) / dataset / mission / f"{timestampToMicroseconds(timestamp)}.pcd"
+
+
+def saveTimestampPCDs(pcds: dict[int, o3d.geometry.PointCloud],
+                      timestamps: dict[int, float],
+                      symbolToMission: dict[str, str],
+                      scansRoot: str | Path,
+                      dataset: str) -> bool:
+    '''
+    Save point clouds to the global scans store {scansRoot}/{dataset}/{mission}/{timestamp_us}.pcd.
+    The mission is found from each key's symbol character. Scans that already exist are skipped since
+    the same timestamp in a mission is always the same raw scan.
+    '''
+    if not pcds:
+        print("No point clouds to save.")
+        return False
+
+    ret = True
+    written = 0
+    skipped = 0
+    unmapped = []
+    for key, pcd in pcds.items():
+        char = chr(gtsam.Symbol(key).chr())
+        if char not in symbolToMission or key not in timestamps:
+            unmapped.append(key)
+            continue
+        path = globalScanPath(scansRoot, dataset, symbolToMission[char], timestamps[key])
+        if path.exists():
+            skipped += 1
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Write to a temporary file first so an interrupted write never leaves a partial scan behind
+        tmpPath = path.with_name(f"{path.stem}.tmp.pcd")
+        if not o3d.io.write_point_cloud(str(tmpPath), pcd):
+            print(f"Failed to save point cloud for key {gtsam.Symbol(key).string()} to {path}")
+            ret = False
+            continue
+        os.replace(tmpPath, path)
+        written += 1
+
+    print(f"Saved {written} new scans to {Path(scansRoot) / dataset} ({skipped} already existed)")
+    if unmapped:
+        print(f"Warning: {len(unmapped)} scans were not saved because their symbol has no mission or they have no timestamp: "
+              f"{[gtsam.Symbol(k).string() for k in unmapped[:10]]}{' ...' if len(unmapped) > 10 else ''}")
+        ret = False
+    return ret
+
+
+def loadTimestampPCDs(keys: list[int],
+                      timestamps: dict[int, float],
+                      symbolToMission: dict[str, str],
+                      scansRoot: str | Path,
+                      dataset: str,
+                      cache: dict[tuple[str, int], o3d.geometry.PointCloud] | None = None
+                      ) -> tuple[dict[int, o3d.geometry.PointCloud], list[int]]:
+    '''
+    Load point clouds for keys from the global scans store.
+
+    :param cache: Optional dict keyed by (mission, timestamp_us) that is read from and filled in,
+        so several sessions loading the same scans only read them from disk once.
+    :return: (pcds keyed by gtsam key, keys that could not be found)
+    '''
+    pcds: dict[int, o3d.geometry.PointCloud] = {}
+    missing: list[int] = []
+    for key in keys:
+        char = chr(gtsam.Symbol(key).chr())
+        if char not in symbolToMission or key not in timestamps:
+            missing.append(key)
+            continue
+        mission = symbolToMission[char]
+        cacheKey = (mission, timestampToMicroseconds(timestamps[key]))
+        if cache is not None and cacheKey in cache:
+            pcds[key] = cache[cacheKey]
+            continue
+        path = globalScanPath(scansRoot, dataset, mission, timestamps[key])
+        if not path.exists():
+            missing.append(key)
+            continue
+        pcd = o3d.io.read_point_cloud(str(path))
+        pcds[key] = pcd
+        if cache is not None:
+            cache[cacheKey] = pcd
+    return pcds, missing
+
+
+def findLegacyScansDir(sessionDir: str | Path) -> Path | None:
+    '''
+    LEGACY: Sessions saved before the global scans store kept scans in {session}/scans or, when there
+    were policy sub-directories, in {session}/../scans using a {char}/{index}.pcd layout.
+    '''
+    sessionDir = Path(sessionDir)
+    for d in (sessionDir / "scans", sessionDir.parent / "scans"):
+        if d.is_dir():
+            return d
+    return None
+
+
+def loadSessionPCDs(sessionDir: str | Path,
+                    keys: list[int],
+                    timestamps: dict[int, float],
+                    scansRoot: str | Path,
+                    dataset: str,
+                    symbolToMission: dict[str, str] | None = None,
+                    cache: dict[tuple[str, int], o3d.geometry.PointCloud] | None = None
+                    ) -> dict[int, o3d.geometry.PointCloud]:
+    '''
+    Load the point clouds for a saved session from the global scans store, falling back to the
+    session's legacy scans directory for any scans that are not in the global store.
+    '''
+    if symbolToMission is None:
+        symbolToMission = missionSymbolMap(sessionDir)
+    pcds, missing = loadTimestampPCDs(keys, timestamps, symbolToMission, scansRoot, dataset, cache=cache)
+
+    if missing:
+        # LEGACY: scans saved per-session as {scans}/{char}/{index}.pcd. Remove once all results have
+        # been moved to the global store with scripts/migrateScansToGlobal.py
+        legacyDir = findLegacyScansDir(sessionDir)
+        if legacyDir is None:
+            raise FileNotFoundError(
+                f"{len(missing)} scans for {sessionDir} were not found in the global scans store {Path(scansRoot) / dataset} "
+                f"and there is no legacy scans directory. First missing: {[gtsam.Symbol(k).string() for k in missing[:5]]}")
+        legacyPcds = loadSymbolPCDs(legacyDir, keys=missing)
+        pcds.update(legacyPcds)
+        stillMissing = set(missing) - set(legacyPcds.keys())
+        if stillMissing:
+            raise FileNotFoundError(
+                f"{len(stillMissing)} scans for {sessionDir} were not found in the global scans store or in {legacyDir}. "
+                f"First missing: {[gtsam.Symbol(k).string() for k in list(stillMissing)[:5]]}")
+        print(f"Warning: loaded {len(legacyPcds)} scans from legacy directory {legacyDir}. "
+              f"Run scripts/migrateScansToGlobal.py to move them to the global scans store.")
 
     return pcds
 

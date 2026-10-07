@@ -467,7 +467,13 @@ def main(argv: list[str] | None = None) -> None:
         "--directory",
         type=Path,
         default=DEFAULT_SESSION_DIR,
-        help="Session directory containing graph.gtsam / values.gtsam / scans/",
+        help="Session directory containing graph.gtsam / values.gtsam / timestamps.txt",
+    )
+    parser.add_argument(
+        "--scans_dir",
+        type=Path,
+        default=None,
+        help="Global scans directory laid out as <scans_dir>/<dataset>/<mission>/<timestamp_us>.pcd (default: Params.scansRootDir)",
     )
     parser.add_argument("--voxel-size", type=float, default=VOXEL_SIZE)
     parser.add_argument("--elev", type=float, default=28.0)
@@ -478,13 +484,17 @@ def main(argv: list[str] | None = None) -> None:
     # Local imports so the notebook can use this module without SessionManager
     # unless it is running standalone.
     from multiSession.SessionManager import SessionManager
+    from params import Params
 
     directory = args.directory
     if not directory.is_absolute():
         directory = (Path(__file__).resolve().parents[1] / directory).resolve()
 
     print(f"Loading session from {directory}")
-    session = SessionManager(directory)
+    params = Params()
+    if args.scans_dir is not None:
+        params.scansRootDir = args.scans_dir.resolve()
+    session = SessionManager(directory, params)
     graph = session.graph
     values = session.values
 

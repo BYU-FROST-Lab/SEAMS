@@ -115,6 +115,8 @@ class SessionManager:
         self.currentSessionSymbol_ = self.params.currSessionSymbolChr
         self.addToPriorSymbol_ = self.params.addToPriorSymbolChr
         self.priorSessionSymbols_ = self.params.priorSessionSymbolChrs
+        # Maps prior session symbol characters to their mission names. Set when loading a session.
+        self.symbolToMission_: dict[str, str] = {}
 
         self.sessionKeys: dict[str, list[int]] = {self.currentSessionSymbol_: []}
         self.lastOdomKey_ = 0
@@ -1268,6 +1270,7 @@ class SessionManager:
                         confirm = input(f"Confirm new directory path {res} (y/[n]): ")
                         if confirm and confirm.lower()[0] == "y":
                             directory = Path(res)
+                            tmp_directory = Path()
         print(f"Saving session to {directory}...")
         os.makedirs(directory, exist_ok=True)
 
@@ -1277,18 +1280,20 @@ class SessionManager:
             finalGraph, finalValues, finalPcds, finalTimestamps = self.GetSessionInfo()
         # fgtools.writeG2oWithPrior(self.graph, self.values, str(directory / "graph.g2o"))
 
-        # PCDs are stored once in the base directory (parent of the policy dir)
-        # under scans/{A,B,C}/ so they can be shared across policies.
-        if (self.params.loadSessionDir  or self.params.priorUpdateMethod == 2) and final:
-            scans_root = directory.parent / "scans"
-        else:
-            scans_root = directory / "scans"
-        
-        if not fgtools.saveSymbolPCDs(finalPcds, scans_root):
-            print(f"Error saving point clouds to {str(scans_root)}")
-        # Ensure the that if there were no new nodes added, the addToPrior symbol directory is still created for other policies
-        (scans_root / self.addToPriorSymbol_).mkdir(parents=True, exist_ok=True)
-        
+        # PCDs are stored once in the global scans store as {scansRootDir}/{dataset}/{mission}/{timestamp_us}.pcd
+        # so they are shared across policies and sessions.
+        symbolToMission = dict(self.symbolToMission_)
+        symbolToMission[self.addToPriorSymbol_] = self.params.mission
+        symbolToMission[self.currentSessionSymbol_] = self.params.mission
+        dirSymbolToMission = fgtools.missionSymbolMap(directory)
+        if any(dirSymbolToMission.get(c) != m for c, m in symbolToMission.items() if c != self.currentSessionSymbol_):
+            print(f"Warning: Save directory name {fgtools.stripPolicyDir(directory).name} does not match the session's missions "
+                  f"{ {c: m for c, m in symbolToMission.items() if c != self.currentSessionSymbol_} }. "
+                  f"Loading this session later uses the directory name to find each symbol's mission.")
+
+        if not fgtools.saveTimestampPCDs(finalPcds, finalTimestamps, symbolToMission, self.params.scansRootDir, self.params.dataset):
+            print(f"Error saving point clouds to {Path(self.params.scansRootDir) / self.params.dataset}")
+
         if not fgtools.serializeGraphToFile(finalGraph, str(directory / "graph.gtsam")):
             print(f"Error saving graph to {str(directory / 'graph.gtsam')}")
         if not fgtools.serializeValuesToFile(finalValues, str(directory / "values.gtsam")):
@@ -1311,7 +1316,14 @@ class SessionManager:
 
         print(f"Done saving session.")
 
-    def LoadSession(self, directory:str|Path|None=None, sharedScans: dict[int, o3d.geometry.PointCloud] | None = None):
+    def LoadSession(self, directory:str|Path|None=None, sharedScans: dict[tuple[str, int], o3d.geometry.PointCloud] | None = None):
+        '''
+        Load a saved session as the prior map.
+
+        :param directory: Session directory. Defaults to params.loadSessionDir
+        :param sharedScans: Optional cache keyed by (mission, timestamp_us) shared between sessions loading the same
+            prior so scans are only read from disk once.
+        '''
 
         if directory is None:
             directory = self.params.loadSessionDir
@@ -1327,77 +1339,46 @@ class SessionManager:
         odomFile = directory / "odom_tum.txt"
         timestampsFile = directory / "timestamps.txt"
 
-        # Detect whether this is the new shared-scans layout:
-        # scans/ lives in the parent (base) dir and has single-letter subdirs.
-        # baseScansDir = directory.parent / "scans"
-        # legacyScansDir = directory / "scans"
-        # sharedScanSymbols = fgtools.discoverScanSymbols(baseScansDir)
-        # useSharedScans = bool(sharedScanSymbols)
-
-        # scansDir = baseScansDir if useSharedScans else legacyScansDir
-
-        if Path(directory / "scans").exists():
-            scansDir = directory / "scans"
-        elif Path(directory.parent / "scans").exists():
-            scansDir = directory.parent / "scans"
-        else:
-            raise ValueError(f"LoadSession: Can't find 'scans' directory in directory or its parent - {directory}")
-
-        if not graphFile.exists() or not valuesFile.exists() or not scansDir.exists() or not odomFile.exists() or not timestampsFile.exists():
-            raise FileNotFoundError(f"One or more files in {directory} are missing. Required files: graph.gtsam, values.gtsam, scans/, odom_tum.txt, timestamps.txt")
+        if not graphFile.exists() or not valuesFile.exists() or not odomFile.exists() or not timestampsFile.exists():
+            raise FileNotFoundError(f"One or more files in {directory} are missing. Required files: graph.gtsam, values.gtsam, odom_tum.txt, timestamps.txt")
 
         self.priorGraph_ = fgtools.deserializeGraphFromFile(str(graphFile))
         self.priorValues_ = fgtools.deserializeValuesFromFile(str(valuesFile))
         self.timestamps_ = fgtools.loadTimestampsWithKeys(str(timestampsFile))
 
-        # if useSharedScans:
-            # New layout: keys on disk already use the correct symbol characters.
-            # Set prior/addToPrior from the folders that are actually represented
-            # in the loaded values; no RenameKeys needed.
-            # if sharedScanSymbols:
-            #     self.addToPriorSymbol_ = chr(ord(sharedScanSymbols[-1]) + 1)
-            # else:
-            #     raise RuntimeError("LoadSession: sharedScanSymbols is empty.")
-            #     self.addToPriorSymbol_ = 'A'
+        # The session directory name ("newMission__...__firstMission") gives the mission for each symbol character
+        self.symbolToMission_ = fgtools.missionSymbolMap(directory)
+        keyChars = set(chr(gtsam.Symbol(k).chr()) for k in self.priorValues_.keys())
+        if not keyChars.issubset(self.symbolToMission_.keys()):
+            raise ValueError(f"LoadSession: Session keys use symbols {sorted(keyChars)} but the directory name "
+                             f"{fgtools.stripPolicyDir(directory).name} only gives missions for {self.symbolToMission_}")
 
-        sharedScanSymbols = fgtools.discoverScanSymbols(scansDir)
-        
-        self.pcds_ = fgtools.loadSymbolPCDs(scansDir, keys=list(self.priorValues_.keys()), sharedScans=sharedScans)
+        # Use the directory name rather than the keys so a mission that added no nodes still keeps its symbol
+        self.priorSessionSymbols_ = sorted(self.symbolToMission_.keys())
+        self.addToPriorSymbol_ = chr(ord(self.priorSessionSymbols_[-1]) + 1)
+
+        dataset = fgtools.readSessionDataset(directory, default=self.params.dataset)
+        if dataset != self.params.dataset:
+            print(f"Warning: Loaded session dataset '{dataset}' does not match current dataset '{self.params.dataset}'")
+        self.pcds_ = fgtools.loadSessionPCDs(directory,
+                                             keys=list(self.priorValues_.keys()),
+                                             timestamps=self.timestamps_,
+                                             scansRoot=self.params.scansRootDir,
+                                             dataset=dataset,
+                                             symbolToMission=self.symbolToMission_,
+                                             cache=sharedScans)
         if not self.pcds_:
             raise ValueError("LoadSession: pcds after loading is still empty!")
-        
-        self.priorSessionSymbols_ = deepcopy(sharedScanSymbols)
-        if not self.priorSessionSymbols_:
-            self.priorSessionSymbols_ = set([chr(gtsam.Symbol(k).chr()) for k in self.pcds_.keys()])
-
-            # Legacy flat layout: full GTSAM key as filename, may need RenameKeys.
-            # self.pcds_ = fgtools.loadPosePCDs(str(scansDir))
-        if self.priorSessionSymbols_:
-            self.addToPriorSymbol_ = chr(ord(list(self.priorSessionSymbols_)[-1]) + 1)
-        else:
-            raise RuntimeError("LoadSession: sharedScanSymbols is empty.")
 
         valuesKeys = set(self.priorValues_.keys())
         if valuesKeys != set(self.pcds_.keys()) or valuesKeys != set(self.timestamps_.keys()):
-            raise ValueError(f"LoadSession: Keys in values, scans, and timestamps do not match. \
-                                # Value keys: {len(self.priorValues_.keys())}, # Scan keys: {len(self.pcds_.keys())}, \
-                                # Timestamp keys: {len(self.timestamps_.keys())}")
+            raise ValueError(f"LoadSession: Keys in values, scans, and timestamps do not match. " \
+                             f"# Value keys: {len(self.priorValues_.keys())}, # Scan keys: {len(self.pcds_.keys())}, " \
+                             f"# Timestamp keys: {len(self.timestamps_.keys())}")
 
-        if not sharedScanSymbols:
-
-            if self.params.rekeyPrior:
-                self.priorGraph_, self.priorValues_ = self.RenameKeys(chars=self.params.priorSessionSymbolChrs,
-                                                                      autoRename=self.params.autoRename,
-                                                                      updateOptimization=False)
         self.UpdateSmoother(reset=True)
         self.UpdatePriorTree()
         # self.UpdatePriorKeyToFactorIndexDict()
-
-        valuesKeys = set(self.priorValues_.keys())
-        if valuesKeys != set(self.pcds_.keys()) or valuesKeys != set(self.timestamps_.keys()):
-            raise ValueError(f"LoadSession: Keys in values, scans, and timestamps do not match after loading. " \
-                             f"# Value keys: {len(self.priorValues_.keys())}, # Scan keys: {len(self.pcds_.keys())}, " \
-                             f"# Timestamp keys: {len(self.timestamps_.keys())}")
 
 
     def Update(self, pointCloud: o3d.geometry.PointCloud, 
@@ -1463,6 +1444,25 @@ class SessionManager:
         #     else:
         #         self.relCovStartKeys_.pop(0)
 
+        ##########################################################################
+        #          Add bad loop closure for boundary accuracy tests              #
+        ##########################################################################
+
+        if len(self.sessionKeys[self.addToPriorSymbol_]) == 2:
+            print(f"Adding bad loop closure for boundary accuracy tests at session key {self.sessionKeys[self.addToPriorSymbol_][1]}")
+            # Add bad loop closure for boundary accuracy tests
+            badPoseOffset = gtsam.Pose3(gtsam.Rot3().Ypr(np.deg2rad(10), 0, 0), gtsam.Point3(0.5, 0.5, 0.5))
+            currPose = self.currentEstimate_.atPose3(self.sessionKeys[self.addToPriorSymbol_][1])
+            badPose = currPose * badPoseOffset
+            self.AddFactor(gtsam.BetweenFactorPose3(
+                self.sessionKeys[self.addToPriorSymbol_][1],
+                self.closestSubmapData_.submapKey,
+                badPose.between(self.currentEstimate_.atPose3(self.closestSubmapData_.submapKey)),
+                gtsam.noiseModel.Isotropic.Variance(6, 1.0)
+            ))
+
+        ##########################################################################
+
         if self.params.enableTransitionInformationCheck:
             self.CheckDeterminants()
         self.currTimestamp_ += 1
@@ -1499,7 +1499,7 @@ class SessionManager:
         self.AddPrior(key, pose, noise)
         self.AddPointCloud(key, pointCloud, timestamp=timestamp)
 
-        # print(f"Initialized to {self.params.policyType.name} - {self.decisionState_.name}")
+        print(f"Initialized to {self.params.policyType.name} - {self.decisionState_.name}")
 
         return key
 
@@ -1549,9 +1549,9 @@ class SessionManager:
                 pctChange = (self.covChangeStartKeyDets_[k][-1] - self.covChangeStartKeyDets_[k][-2]) / self.covChangeStartKeyDets_[k][-2]
                 print(f"Percent change determinant for start key {gtsam.Symbol(k).string()} is {pctChange*100:.2f}%")
 
-                if pctChange > 0.1 or flush:
+                if pctChange > self.params.boundaryLoc2Map or flush:
                     # Must be below threshold for 2 in a row
-                    if self.covChangeStartKeyJitterBuffer_[k] < 1 and not flush:
+                    if self.covChangeStartKeyJitterBuffer_[k] < 0 and not flush: # TODO: Change back to < 1
                         self.covChangeStartKeyJitterBuffer_[k] += 1
                         continue
                     # Relabel and retain current session factors and values previous to k
@@ -1588,12 +1588,12 @@ class SessionManager:
             fgtools.AddValueToDictList(self.covChangeEndKeyDets_, k, np.linalg.det(self.smoother_.marginalCovariance(k)))
 
             if len(self.covChangeEndKeyDets_[k]) >= 2:
-                pctChange = (self.covChangeEndKeyDets_[k][-2] - self.covChangeEndKeyDets_[k][-1]) / self.covChangeEndKeyDets_[k][-2]
+                pctChange = (self.covChangeEndKeyDets_[k][-1] - self.covChangeEndKeyDets_[k][-2]) / self.covChangeEndKeyDets_[k][-2]
                 print(f"Percent change determinant for end key   {gtsam.Symbol(k).string()} is {pctChange*100:.2f}%")
 
-                if (pctChange < 0.1 and pctChange >= 0.01) or flush:
+                if (pctChange < self.params.boundaryMap2Loc and pctChange >= self.params.boundaryMap2LocNearZero) or flush:
                     # Must be below threshold for 2 in a row
-                    if self.covChangeEndKeyJitterBuffer_[k] < 1 and not flush:
+                    if self.covChangeEndKeyJitterBuffer_[k] < 0 and not flush: # TODO: Change back to < 1
                         self.covChangeEndKeyJitterBuffer_[k] += 1
                         continue
                     # Relabel and retain current session factors and values previous to k

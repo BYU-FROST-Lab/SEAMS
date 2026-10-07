@@ -12,7 +12,7 @@ Computes, per policy folder found under the given session directory:
 * Total number of nodes in the final factor graph (from ``values.gtsam``)
 * Final factor-graph memory size (MB) from ``graph.gtsam`` and
   ``values.gtsam`` (loaded and re-serialized to measure byte length)
-* Final point-cloud memory size (MB) from ``scans/`` (only the keys
+* Final point-cloud memory size (MB) from the global scans store (only the keys
   that appear in ``values.gtsam`` are loaded and summed)
 
 Example
@@ -44,6 +44,9 @@ SEP = "-" * 80
 # these files.
 # ---------------------------------------------------------------------------
 _POLICY_SENTINEL_FILES = ("graph.gtsam", "values.gtsam", "odom_tum.txt")
+
+# Default global scans store (see Params.scansRootDir)
+DEFAULT_SCANS_DIR = Path(__file__).resolve().parents[1] / "results" / "scans"
 
 # Both spellings of the metrics/decision timing file have been observed.
 _METRIC_TIMING_CANDIDATES = (
@@ -239,11 +242,11 @@ def _load_graph_info(policy_dir: Path) -> tuple[float | None, int | None]:
         return None, None
 
     try:
-        import gtsam_unstable  # only available in the multisession env
-        graph  = gtsam_unstable.deserializeGraphFromFile(str(graph_file))
-        values = gtsam_unstable.deserializeValuesFromFile(str(values_file))
-        graph_bytes  = len(gtsam_unstable.serializeGraph(graph).encode("utf-8"))
-        values_bytes = len(gtsam_unstable.serializeValues(values).encode("utf-8"))
+        import common.fgHelpers as fgtools  # workspace must be on sys.path
+        graph  = fgtools.deserializeGraphFromFile(str(graph_file))
+        values = fgtools.deserializeValuesFromFile(str(values_file))
+        graph_bytes  = len(graph.serialize().encode("utf-8"))
+        values_bytes = len(values.serialize().encode("utf-8"))
         memory_MB  = (graph_bytes + values_bytes) / 1e6
         num_nodes  = len(list(values.keys()))
         return memory_MB, num_nodes
@@ -252,38 +255,33 @@ def _load_graph_info(policy_dir: Path) -> tuple[float | None, int | None]:
         return None, None
 
 
-def _load_pcd_memory_MB(policy_dir: Path) -> float | None:
+def _load_pcd_memory_MB(policy_dir: Path, scans_dir: Path = DEFAULT_SCANS_DIR) -> float | None:
     """Load the point clouds belonging to this policy and return their memory in MB.
 
-    Scans layout mirrors ``SessionManager.LoadSession``:
-    - ``{policy}/scans/`` if it exists, else
-    - ``{policy.parent}/scans/``
+    Scans are loaded like ``SessionManager.LoadSession``: from the global scans
+    store ``{scans_dir}/{dataset}/{mission}/{timestamp_us}.pcd``, falling back
+    to a legacy ``{policy}/scans/`` or ``{policy.parent}/scans/`` directory.
     Only keys that are present in ``values.gtsam`` are loaded.
     """
     values_file = policy_dir / "values.gtsam"
-
-    # Resolve scan root
-    local_scans  = policy_dir / "scans"
-    shared_scans = policy_dir.parent / "scans"
-    if local_scans.is_dir():
-        scans_root = local_scans
-    elif shared_scans.is_dir():
-        scans_root = shared_scans
-    else:
-        warnings.warn(f"No scans directory found for policy {policy_dir}")
-        return None
+    timestamps_file = policy_dir / "timestamps.txt"
 
     try:
-        import gtsam_unstable
         import common.fgHelpers as fgtools  # workspace must be on sys.path
 
+        timestamps = fgtools.loadTimestampsWithKeys(timestamps_file)
         if values_file.is_file():
-            values = gtsam_unstable.deserializeValuesFromFile(str(values_file))
+            values = fgtools.deserializeValuesFromFile(str(values_file))
             keys   = list(values.keys())
         else:
-            keys = None  # load all found PCDs
+            keys = list(timestamps.keys())  # load all scans in the session
 
-        pcds = fgtools.loadSymbolPCDs(scans_root, keys=keys)
+        dataset = fgtools.readSessionDataset(policy_dir)
+        if dataset is None:
+            warnings.warn(f"No dataset found in metadata.yaml for policy {policy_dir}")
+            return None
+
+        pcds = fgtools.loadSessionPCDs(policy_dir, keys, timestamps, scans_dir, dataset)
 
         total_bytes = 0
         for pcd in pcds.values():
@@ -304,7 +302,7 @@ def _load_pcd_memory_MB(policy_dir: Path) -> float | None:
 # Main evaluation
 # ---------------------------------------------------------------------------
 
-def evaluate_policy(policy_dir: Path, label: str) -> PolicyResources:
+def evaluate_policy(policy_dir: Path, label: str, scans_dir: Path = DEFAULT_SCANS_DIR) -> PolicyResources:
     """Load all resource metrics for a single policy folder."""
     res = PolicyResources(policy_name=label, path=policy_dir)
 
@@ -332,19 +330,19 @@ def evaluate_policy(policy_dir: Path, label: str) -> PolicyResources:
     res.graph_memory_MB, res.graph_num_nodes = _load_graph_info(policy_dir)
 
     # Point-cloud memory
-    res.pcd_memory_MB = _load_pcd_memory_MB(policy_dir)
+    res.pcd_memory_MB = _load_pcd_memory_MB(policy_dir, scans_dir)
 
     return res
 
 
-def evaluate(dir_args: list[str | Path]) -> list[PolicyResources]:
+def evaluate(dir_args: list[str | Path], scans_dir: Path = DEFAULT_SCANS_DIR) -> list[PolicyResources]:
     """Evaluate all policy folders discovered under ``dir_args``."""
     policy_dirs = resolve_policy_dirs(dir_args)
     labels = unique_policy_labels(policy_dirs)
     results = []
     for policy_dir, label in zip(policy_dirs, labels):
         logger.info("%s\nEvaluating policy: %s  (%s)", SEP, label, policy_dir)
-        results.append(evaluate_policy(policy_dir, label))
+        results.append(evaluate_policy(policy_dir, label, scans_dir))
     return results
 
 
@@ -428,6 +426,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--scans_dir",
+        default=str(DEFAULT_SCANS_DIR),
+        metavar="PATH",
+        help="Global scans directory laid out as <scans_dir>/<dataset>/<mission>/<timestamp_us>.pcd "
+             f"(default: {DEFAULT_SCANS_DIR}).",
+    )
+    parser.add_argument(
         "--save_table",
         default=None,
         metavar="CSV",
@@ -475,7 +480,7 @@ def main(argv: list[str] | None = None) -> int:
         for p in policy_dirs:
             print(f"  {p}")
 
-    results = evaluate(args.dir)
+    results = evaluate(args.dir, Path(args.scans_dir))
 
     if not args.silent:
         for res in results:

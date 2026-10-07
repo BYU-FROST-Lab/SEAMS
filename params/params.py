@@ -28,7 +28,7 @@ class LoopClosure:
 # Geometry policy
 @dataclass
 class DistancePolicy:
-    minDistance: float | int = 10
+    minDistance: float | int = 35
 
 # Overlap policy
 @dataclass
@@ -84,7 +84,7 @@ class Params:
     ##################################################################
 
     # Fixed Lag Smoother Params
-    fixedLagKeepFrames: int = 30
+    fixedLagKeepFrames: int = 100
     fixedLagMarg: FixedLagMarginalizationType = FixedLagMarginalizationType.APPROX_PRIOR
     # fixedLagMarg: FixedLagMarginalizationType = FixedLagMarginalizationType.DENSE
     linearFactorMaxNodes: int = 2       # 2 = Binary factor
@@ -116,10 +116,17 @@ class Params:
     moduleDir: Path = Path(__file__).parents[1]
     loadSessionDir: Path |None = None
     saveSessionDir: Path = moduleDir / f"results/test/{dataset}/{mission}"
+    # Global point cloud store shared by all sessions: {scansRootDir}/{dataset}/{mission}/{timestamp_us}.pcd
+    scansRootDir: Path = moduleDir / "results/scans"
 
     # Odometry
     kissICPConfigFile: Path = moduleDir / "params/kiss_icp.yaml"
     refineOdometry: bool = False    # Refine the odometry using an additional scan match after kiss-icp
+
+    # Boundary Thresholds: Positive -> increasing covariance, Negative -> decreasing covariance
+    boundaryLoc2Map: float = 0.1
+    boundaryMap2Loc: float = -0.1
+    boundaryMap2LocNearZero: float = -0.01
 
     # GPS
     useGps: bool = False

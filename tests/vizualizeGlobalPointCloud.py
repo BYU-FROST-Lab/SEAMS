@@ -6,6 +6,7 @@ import open3d as o3d
 import matplotlib.pyplot as plt
 import json
 import gtsam
+from params import Params
 
 from argparse import ArgumentParser
 
@@ -14,6 +15,7 @@ if __name__ == "__main__":
     parser.add_argument("-d", "--directory", type=str, nargs='+', default=None, help="Specify which session directory to load")
     parser.add_argument("-s", "--save", action='store_true', help="Flag to save the final point cloud")
     parser.add_argument("-v", "--voxel-size", type=float, default=0.5, help="Voxel size for global map")
+    parser.add_argument("--scans_dir", type=str, default=str(Params().scansRootDir), help="Global scans directory laid out as <scans_dir>/<dataset>/<mission>/<timestamp_us>.pcd")
     args = parser.parse_args()
 
     # Print as a clean, structured list
@@ -44,19 +46,13 @@ if __name__ == "__main__":
         odomFile = directory / "odom_tum.txt"
         timestampsFile = directory / "timestamps.txt"
 
-        if Path(directory.parent / "scans").exists():
-            scansDir = directory.parent / "scans"
-        elif Path(directory / "scans").exists():
-            scansDir = directory / "scans"
-        else:
-            raise ValueError(f"LoadSession: Can't find 'scans' directory in directory or its parent - {directory}")
-
         key2timestamps = fgtools.loadTimestampsWithKeys(str(timestampsFile))
         timestamps2keys = {value: key for key, value in key2timestamps.items()}
 
-        sharedScanSymbols = fgtools.discoverScanSymbols(scansDir)
-        
-        pcds = fgtools.loadSymbolPCDs(scansDir, keys=list(key2timestamps.keys()))
+        dataset = fgtools.readSessionDataset(directory)
+        if dataset is None:
+            raise ValueError(f"No dataset found in {directory / 'metadata.yaml'}")
+        pcds = fgtools.loadSessionPCDs(directory, list(key2timestamps.keys()), key2timestamps, args.scans_dir, dataset)
         if not pcds:
             raise ValueError("LoadSession: pcds after loading is still empty!")
 

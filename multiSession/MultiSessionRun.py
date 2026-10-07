@@ -26,6 +26,7 @@ from common.kissicp_odom import KissICPOdom
 from params.params import Params
 from rosBagRead.readFromRosbags import ReadTopicsFromRosbag
 from common.groundTruthLoader import GroundTruthLoader
+from common.datasetPaths import getMissionPaths
 
 # ------------------------------------------------------------
 # Visualization flags — override these or use --viz on the CLI
@@ -66,14 +67,19 @@ def run_session(params: Params = Params(),
                 enable_open3d: bool = ENABLE_OPEN3D,
                 policy: DecisionType | None = None,
                 evaluate_decision_types: list[DecisionType] = [],
-                lastRun: bool = True
+                lastRun: bool = True,
+                bagStartSeconds: float = 1.0,
+                simulationLength: float | None = None
                 ):
+    '''
+    :param simulationLength: (Optional) Only run this many seconds of the bag. Runs the full bag if None.
+    '''
     #########################################################################################
     # Session Parameters
     #########################################################################################
 
     # MAX_COUNT = 200
-    MAX_COUNT = 0
+    MAX_COUNT = 5
     FIXED_WINDOW = False
     SAVE_FULL_SESSION = True
     SAME_SESSION_COV_CHANGE_PLOT = False
@@ -92,10 +98,8 @@ def run_session(params: Params = Params(),
     if evaluate_decision_types and (params.loadSessionDir is not None or params.priorUpdateMethod == 2):
         currentSession = []
         still_valid = [True] * len(evaluate_decision_types)
-        if params.loadSessionDir is not None:
-            shared_pcds = fgtools.loadSymbolPCDs(params.loadSessionDir / "scans")
-        else:
-            shared_pcds = None
+        # Cache of scans keyed by (mission, timestamp_us) so each policy's prior is only read from disk once
+        shared_pcds: dict = {}
         for idx, dt in enumerate(evaluate_decision_types):
             if dt == policy:
                 vizIndex = idx
@@ -126,7 +130,9 @@ def run_session(params: Params = Params(),
         still_valid = [True]
 # |
 # v
-    bag1 = ReadTopicsFromRosbag(str(params.bagFile), waiting_threshold=1.0)
+    bag1 = ReadTopicsFromRosbag(str(params.bagFile), waiting_threshold=bagStartSeconds,
+                                RUN_FULL_SIMULATION=simulationLength is None,
+                                simulation_length_s=simulationLength if simulationLength is not None else 60.0)
 
     if params.gtFile is not None:
         gt = GroundTruthLoader(str(params.gtFile), dataset=params.dataset)
@@ -496,6 +502,8 @@ def main():
     parser.add_argument("-l", "--load_session_dir", type=str, default=None, help="Directory to load a previous session from (default: None)")
     # Argument for the save session directory (optional)
     parser.add_argument("-s", "--save_session_dir", type=str, default=None, help="Directory to save the current session to (default: None)")
+    # Argument for the global scans directory (optional)
+    parser.add_argument("--scans_dir", type=str, default=None, help=f"Global directory scans are saved to and loaded from as <scans_dir>/<dataset>/<mission>/<timestamp_us>.pcd (default: {Params().scansRootDir})")
     # Visualization mode
     parser.add_argument(
         "-v", "--viz",
@@ -535,6 +543,8 @@ def main():
     
     args = parser.parse_args()
 
+    dirAfterResults = ""
+
     ########################################
     # Hardcode values for testing purposes #
     ########################################
@@ -553,8 +563,8 @@ def main():
     # args.viz = "none"
     # args.viz = "o3d"
     args.prior_update_method = 0 # 0: post, 2: continuous
-    args.transition_check = False
-    dirAfterResults = "test_3"
+    args.transition_check = True
+    dirAfterResults = "boundaryEval"
 
     # args.dataset = "nc"
     # args.missions = [
@@ -582,13 +592,14 @@ def main():
     args.dataset = "urban"
     args.missions = [
         # "block0",
-        # "block1",
-        "block2",
+        "block1",
+        # "block2",
     ]
     # args.load_session_dir = None
     # args.load_session_dir = moduleDir / "results/urban/block0/"
     # args.save_session_dir = moduleDir / "results/urban/block0"
-    args.load_session_dir = moduleDir / "results/test_3/urban/exact/post/block1__block0/"
+    args.load_session_dir = moduleDir / "results/boundaryEval/urban/exact/post/block0/"
+    args.save_session_dir = moduleDir / "results/boundaryEvalBadLoop/urban/exact/post/block1__block0/"
     # args.load_session_dir = moduleDir / "policy_evaluation/urban2/block1_prior_block0/"
     # args.load_session_dir = moduleDir / "policy_evaluation/urban2/block0"
     # args.viz = "none"
@@ -617,23 +628,7 @@ def main():
     i = 0
     for i, mission in enumerate(args.missions):
 
-        if args.dataset == "nc":
-            nc_data_dir = Path.home() / "data_sets/NewerCollege/ros2"
-            bag_file = nc_data_dir / mission
-            gt_file = nc_data_dir / "ground_truth_tum" / f"gt-nc-{mission}.csv"
-
-        elif args.dataset == "urban":
-            urban_data_dir = Path.home() / "data_byu/bags/urban"
-            bag_file = urban_data_dir / mission
-            gt_file = urban_data_dir / "groundTruth" / f"{mission}_gt" / "optimized_poses.txt"
-
-        elif args.dataset == "nclt":
-            nclt_data_dir = Path.home() / "data_sets/NCLT/nclt2ros/"
-            bag_file = nclt_data_dir / f"rosbags/{mission}/ros2_bag/"
-            gt_file = nclt_data_dir / f"raw_data/{mission}/ground_truth/groundtruth_{mission}.csv"
-
-        else:
-            raise ValueError("Need to specify a dataset")
+        bag_file, gt_file = getMissionPaths(args.dataset, mission)
 
         if not bag_file.exists():
             print(f"Bag file {bag_file} does not exist")
@@ -687,36 +682,44 @@ def main():
         else:
             maxCorrespondingDistance = 0.5
 
-        params = Params(
-            policyType=policy,
-            rekeyPrior=True,
-            loadSessionDir=load_session_dir,
-            saveSessionDir=save_session_dir,
-            dataset=args.dataset.lower(),
-            mission=mission,
-            bagFile=bag_file,
-            gtFile=gt_file,
-            priorUpdateMethod=priorUpdateMethod,
-            enableTransitionInformationCheck=transitionBroundaryCheck,
-            loopClosure=LoopClosure(
-                maxCorrespondenceDist=maxCorrespondingDistance
+        boundaryThresholds = [0.01, 0.05, 0.25, 0.5, 1.0, 2.0]
+        # boundaryThresholds = [np.inf]
+        # boundaryThresholds = [0.1]
+        for boundaryThreshold in boundaryThresholds:
+            params = Params(
+                policyType=policy,
+                rekeyPrior=True,
+                loadSessionDir=load_session_dir,
+                saveSessionDir=save_session_dir.parent / f"Loc2Map_{int(boundaryThreshold*100) if np.isfinite(boundaryThreshold) else "inf"}" / save_session_dir.name,
+                dataset=args.dataset.lower(),
+                mission=mission,
+                bagFile=bag_file,
+                gtFile=gt_file,
+                priorUpdateMethod=priorUpdateMethod,
+                enableTransitionInformationCheck=transitionBroundaryCheck,
+                scansRootDir=Path(args.scans_dir).absolute() if args.scans_dir is not None else Params().scansRootDir,
+                loopClosure=LoopClosure(
+                    maxCorrespondenceDist=maxCorrespondingDistance
+                ),
+                boundaryLoc2Map=boundaryThreshold,
             )
-        )
 
-        from dataclasses import asdict
-        from pprint import pprint
+            from dataclasses import asdict
+            from pprint import pprint
 
-        print("Running Multi-Session Test with the following parameters:")
-        pprint(asdict(params), sort_dicts=False)
-        print(f"Visualization: matplotlib={'on' if enable_mpl else 'off'}  open3d={'on' if enable_o3d else 'off'}")
+            print("Running Multi-Session Test with the following parameters:")
+            pprint(asdict(params), sort_dicts=False)
+            print(f"Visualization: matplotlib={'on' if enable_mpl else 'off'}  open3d={'on' if enable_o3d else 'off'}")
 
-        run_session(params, 
-                    enable_matplotlib=enable_mpl, 
-                    enable_open3d=enable_o3d, 
-                    policy=policy, 
-                    evaluate_decision_types=decisionTypes,
-                    lastRun=True if i == len(args.missions)-1 else False
-                    )
+            run_session(params, 
+                        enable_matplotlib=enable_mpl, 
+                        enable_open3d=enable_o3d, 
+                        policy=policy, 
+                        evaluate_decision_types=decisionTypes,
+                        lastRun=True if i == len(args.missions)-1 and boundaryThreshold == boundaryThresholds[-1] else False,
+                        bagStartSeconds=30.0,
+                        simulationLength=100.0
+                        )
 
 
 if __name__ == "__main__":
