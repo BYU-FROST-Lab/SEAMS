@@ -54,6 +54,8 @@ class Metrics:
                     print(f"WARNING: Metrics: Prior nodes have significantly changed distance: {closestDistance} (previous: {self.closestDistance})")
             else:
                 self.closestDistance = np.inf
+            if self.params.distancePolicy.debug:
+                print(f"Metrics: Closest distance = {self.closestDistance}")
 
         if DecisionType.OVERLAP in self.method_:
             self.ComputeOverlapRatio(closestSubmapData)

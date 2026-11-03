@@ -68,7 +68,7 @@ def run_session(params: Params = Params(),
                 policy: DecisionType | None = None,
                 evaluate_decision_types: list[DecisionType] = [],
                 lastRun: bool = True,
-                bagStartSeconds: float = 1.0,
+                bagStartOffset: float = 1.0,
                 simulationLength: float | None = None
                 ):
     '''
@@ -86,6 +86,10 @@ def run_session(params: Params = Params(),
     SAVE_COVARIANCE_OF_CURRENT_POSE = False
     SAVE_UPDATE_TIMING = False
     SHOW_PRIOR_VALUES = False
+    PLOT_COVARIANCES = False
+
+    # GT_EVERY_N_FRAMES = 20
+    GT_EVERY_N_FRAMES = 0
 
     show_mpl = enable_matplotlib
     show_o3d = enable_open3d
@@ -130,7 +134,7 @@ def run_session(params: Params = Params(),
         still_valid = [True]
 # |
 # v
-    bag1 = ReadTopicsFromRosbag(str(params.bagFile), waiting_threshold=bagStartSeconds,
+    bag1 = ReadTopicsFromRosbag(str(params.bagFile), waiting_threshold=bagStartOffset,
                                 RUN_FULL_SIMULATION=simulationLength is None,
                                 simulation_length_s=simulationLength if simulationLength is not None else 60.0)
 
@@ -230,14 +234,18 @@ def run_session(params: Params = Params(),
             for i, cs in enumerate(currentSession):
                 if not still_valid[i]:
                     continue
+                gtPose = gt.get_closest_gt(timestamp) if gt is not None and GT_EVERY_N_FRAMES > 0 and \
+                    (currentSession[i].currTimestamp_ + 1) % GT_EVERY_N_FRAMES == 0 else None
+                if gtPose is not None:
+                    pass
                 if evaluate_decision_types:
                     try:
-                        results[i] = cs.Update(pointCloud, relPose=copy.deepcopy(relPose_tmp), timestamp=copy.copy(timestamp), gpsData=gps_msg)
+                        results[i] = cs.Update(pointCloud, relPose=copy.deepcopy(relPose_tmp), timestamp=copy.copy(timestamp), gpsData=gps_msg, gtPose=gtPose)
                     except Exception as e:
                         print(f"Error updating session {cs.params.policyType.name}: {e}")
                         still_valid[i] = False
                 else:
-                    results[i] = cs.Update(pointCloud, relPose=copy.deepcopy(relPose_tmp), timestamp=copy.copy(timestamp), gpsData=gps_msg)
+                    results[i] = cs.Update(pointCloud, relPose=copy.deepcopy(relPose_tmp), timestamp=copy.copy(timestamp), gpsData=gps_msg, gtPose=gtPose)
 
 # |
 # v
@@ -376,7 +384,7 @@ def run_session(params: Params = Params(),
                     ax.plot(gt.array[:,1], gt.array[:,2], color='tab:green', label='Ground Truth', alpha=0.5)
                     # ax.plot(gt2.array[:,1], gt2.array[:,2], color='tab:orange', label='Ground Truth Block0', alpha=0.5)
                 fgtools.plot_graph(currentSession[vizIndex].graph, tmpValues, ax=ax, title=plotTitle, changeColorBySymbols=True, addKeyLabels=False, symbolColors=sessionSymbols)
-                if currentSession[vizIndex].params.policyType == DecisionType.RELATIVE_COVARIANCE:
+                if PLOT_COVARIANCES:
                     fgtools.plot_graph_covariances(tmpValues.keys(), currentSession[vizIndex].fixedLagSmoother, tmpValues, ax=ax, changeColorBySymbols=True, symbolColors=sessionSymbols)
                 # Plot prior tree keys
                 if currentSession[vizIndex].interLoopTree_ is not None and SHOW_PRIOR_VALUES:
@@ -438,29 +446,30 @@ def run_session(params: Params = Params(),
 # ^
 # |
         if SAVE_FULL_SESSION:
-            cs.SaveSession(params.saveSessionDir)
-            if params.loadSessionDir:
-                directory = params.saveSessionDir / cs.params.policyType.name
-            else:
-                directory = Path(params.saveSessionDir)
-            # Save matplotlib figure
-            plt.savefig(directory / "final_graph.png", dpi=300, bbox_inches='tight')
+            directory = cs.SaveSession(params.saveSessionDir)
+            if directory is not None:
+                # if params.loadSessionDir:
+                #     directory = params.saveSessionDir / cs.params.policyType.name
+                # else:
+                #     directory = Path(params.saveSessionDir)
+                # Save matplotlib figure
+                plt.savefig(directory / "final_graph.png", dpi=300, bbox_inches='tight')
 
-            # Save figure with covariances
-            try:
-                fgtools.plot_graph_covariances(final_values.keys(), cs.smoother_, final_values, ax=ax, changeColorBySymbols=True, symbolColors=sessionSymbols)
-                plt.savefig(directory / "final_graph_with_covariances.png", dpi=300, bbox_inches='tight')
-            except Exception as e:
-                print(f"Error occurred while plotting covariances: {e}")
-            ax.clear()
+                # Save figure with covariances
+                try:
+                    fgtools.plot_graph_covariances(final_values.keys(), cs.smoother_, final_values, ax=ax, changeColorBySymbols=True, symbolColors=sessionSymbols)
+                    plt.savefig(directory / "final_graph_with_covariances.png", dpi=300, bbox_inches='tight')
+                except Exception as e:
+                    print(f"Error occurred while plotting covariances: {e}")
+                ax.clear()
 
-            # Plot the final graph and save with ground truth
-            fgtools.plot_graph(final_graph, final_values, ax=ax, title=plotTitle, addKeyLabels=False, changeColorBySymbols=True, symbolColors=sessionSymbols)
-            if gt is not None:
-                ax.plot(gt.array[:,1], gt.array[:,2], color='tab:green', label='Ground Truth', alpha=0.5)
-                plt.savefig(directory / "final_graph_with_ground_truth.png", dpi=300, bbox_inches='tight')
+                # Plot the final graph and save with ground truth
+                fgtools.plot_graph(final_graph, final_values, ax=ax, title=plotTitle, addKeyLabels=False, changeColorBySymbols=True, symbolColors=sessionSymbols)
+                if gt is not None:
+                    ax.plot(gt.array[:,1], gt.array[:,2], color='tab:green', label='Ground Truth', alpha=0.5)
+                    plt.savefig(directory / "final_graph_with_ground_truth.png", dpi=300, bbox_inches='tight')
         else:
-            Path.mkdir(directory, exist_ok=True)
+            Path.mkdir(params.saveSessionDir, exist_ok=True)
 
     if SAME_SESSION_COV_CHANGE_PLOT:
         # Save dictionary for plotting elsewhere
@@ -559,7 +568,7 @@ def main():
     # #     # "TWO_OPTION",
     # # #     "RELATIVE_COVARIANCE",
     # ]   
-    args.policy = "DISTANCE"
+    args.policy = "NONE"
     # args.viz = "none"
     # args.viz = "o3d"
     args.prior_update_method = 0 # 0: post, 2: continuous
@@ -568,12 +577,14 @@ def main():
 
     # args.dataset = "nc"
     # args.missions = [
-    #     # "quad-easy",
-    #     # "quad-medium",
-    #     "quad-hard",
+        # "quad-easy",
+        # "quad-medium",
+        # "quad-hard",
     #     # "cloister",
-    #     # "park",
+        # "park",
     # ]
+    # args.load_session_dir = moduleDir / "results/boundaryEval/nc/exact/post/quad-easy"
+    # args.save_session_dir = moduleDir / "results/boundaryEvalBadLoop/nc/exact/post/park__quad-easy"
     # # args.load_session_dir = moduleDir / "results/accuracyEval/nc/wellConstrained/continuous/cloister__quad-hard__quad-medium__quad-easy/"
     # # args.load_session_dir = moduleDir / "results/nc/post/cloister__quad-hard__quad-medium__quad-easy"
     # args.load_session_dir = moduleDir / "results/accuracyEval/nc/exact/post/quad-easy"
@@ -586,20 +597,21 @@ def main():
     # args.save_session_dir = moduleDir / "results/transitionBoundaryEval/nc/exact/quad-hard__quad-easy"
     # args.save_session_dir = moduleDir / "results/transitionBoundaryEval/nc/wellConstrained/quad-hard__quad-easy"
     # # args.save_session_dir = moduleDir / "results/nc/well_constrained/quad-medium__quad-easy"
-    # # args.save_session_dir = moduleDir / "results/marginalizationEvaluation/nc/approx__quad-hard__quad-easy"
+    # args.save_session_dir = moduleDir / "results/marginalizationEvaluation/nc/fullSLAM__quad-medium__quad-easy"
     # args.save_session_dir = moduleDir / "results/accuracyEval/nc/exact/continuous/quad-easy/"
 
     args.dataset = "urban"
     args.missions = [
         # "block0",
-        "block1",
-        # "block2",
+        # "block1",
+        "block2",
     ]
     # args.load_session_dir = None
     # args.load_session_dir = moduleDir / "results/urban/block0/"
     # args.save_session_dir = moduleDir / "results/urban/block0"
-    args.load_session_dir = moduleDir / "results/boundaryEval/urban/exact/post/block0/"
-    args.save_session_dir = moduleDir / "results/boundaryEvalBadLoop/urban/exact/post/block1__block0/"
+    args.load_session_dir = moduleDir / "results/exactPrior/urban/post/block0/"
+    # args.load_session_dir = moduleDir / "results/boundaryEval/urban/wellConstrained/post/block0/"
+    args.save_session_dir = moduleDir / "results/boundaryEvalBadStartLarge/urban/wellConstrained/post/block2__block0/"
     # args.load_session_dir = moduleDir / "policy_evaluation/urban2/block1_prior_block0/"
     # args.load_session_dir = moduleDir / "policy_evaluation/urban2/block0"
     # args.viz = "none"
@@ -682,26 +694,34 @@ def main():
         else:
             maxCorrespondingDistance = 0.5
 
-        boundaryThresholds = [0.01, 0.05, 0.25, 0.5, 1.0, 2.0]
+        # boundaryThresholds = [0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, np.inf]
         # boundaryThresholds = [np.inf]
-        # boundaryThresholds = [0.1]
+        boundaryThresholds = [0.1]
+        # maxCorrespondingDistance = 5.0
+
         for boundaryThreshold in boundaryThresholds:
             params = Params(
                 policyType=policy,
                 rekeyPrior=True,
                 loadSessionDir=load_session_dir,
-                saveSessionDir=save_session_dir.parent / f"Loc2Map_{int(boundaryThreshold*100) if np.isfinite(boundaryThreshold) else "inf"}" / save_session_dir.name,
+                saveSessionDir=save_session_dir,
+                # saveSessionDir=save_session_dir.parent / f"Loc2Map_{int(boundaryThreshold*100) if np.isfinite(boundaryThreshold) else "inf"}" / save_session_dir.name,
+                # saveSessionDir=save_session_dir.parent / f"Loc2Map" / save_session_dir.name,
+                # saveSessionDir=save_session_dir.parent / f"Map2Loc_{int(boundaryThreshold*100) if np.isfinite(boundaryThreshold) else "inf"}" / save_session_dir.name,
+                # saveSessionDir=save_session_dir.parent / f"Map2Loc" / save_session_dir.name,
                 dataset=args.dataset.lower(),
                 mission=mission,
                 bagFile=bag_file,
                 gtFile=gt_file,
                 priorUpdateMethod=priorUpdateMethod,
-                enableTransitionInformationCheck=transitionBroundaryCheck,
+                enableTransitionInformationCheck=transitionBroundaryCheck if np.isfinite(boundaryThreshold) else False,
                 scansRootDir=Path(args.scans_dir).absolute() if args.scans_dir is not None else Params().scansRootDir,
                 loopClosure=LoopClosure(
                     maxCorrespondenceDist=maxCorrespondingDistance
                 ),
-                boundaryLoc2Map=boundaryThreshold,
+                # boundaryLoc2Map=float(boundaryThreshold),
+                boundaryMap2Loc=float(boundaryThreshold),
+                boundaryMap2LocNearZero=0.001 if boundaryThreshold == 0.01 else 0.01
             )
 
             from dataclasses import asdict
@@ -717,8 +737,16 @@ def main():
                         policy=policy, 
                         evaluate_decision_types=decisionTypes,
                         lastRun=True if i == len(args.missions)-1 and boundaryThreshold == boundaryThresholds[-1] else False,
-                        bagStartSeconds=30.0,
-                        simulationLength=100.0
+                        # bagStartOffset=30.0, # For boundary Loc2Map test urban
+                        # simulationLength=100.0 # For boundary Loc2Map test urban
+                        # bagStartOffset=80.0, # For boundary Loc2Map test nc
+                        # simulationLength=70.0 # For boundary Loc2Map test nc
+                        # bagStartOffset=250.0, # For boundary Map2Loc test urban
+                        # simulationLength=100.0 # For boundary Map2Loc test urban
+                        # bagStartOffset=80.0, # For boundary Map2Loc test nc
+                        # simulationLength=80.0 # For boundary Map2Loc test nc
+                        # bagStartOffset=200.0,
+                        # simulationLength=None
                         )
 
 

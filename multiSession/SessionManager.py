@@ -18,6 +18,7 @@ import yaml
 # Local imports
 import common.fgHelpers as fgtools
 import gtsam
+S = gtsam.Symbol
 from params import Params
 from common.customTypes import *
 from metrics import Metrics
@@ -42,13 +43,15 @@ class SessionManager:
         # I have gotten weird errors where calculateEstimate() tries to find a value I've already removed and throws an error.
         # I'm not sure why, but it works with these parameters.
         self.isamParams_ = gtsam.ISAM2Params()
+        # QR is more numerically robust than Cholesky. Long chains that are only weakly anchored (e.g. mapping with a loose prior)
+        # produce nearly indeterminate systems that Cholesky can't factor.
+        self.isamParams_.setFactorization("QR")
         if self.params.dataset == "nclt":
             gnParams = gtsam.ISAM2GaussNewtonParams(0.0) # enforces error propagation to go through entire tree instead of ending early
             self.isamParams_.setOptimizationParams(gnParams)
             self.isamParams_.setRelinearizeThreshold(0.0) # Must be zero to work
             self.isamParams_.relinearizeSkip = 1 # Must be small (<4) to work
             self.isamParams_.findUnusedFactorSlots = True # Docs say to use this when doing fixedLagSmoother type things.
-            self.isamParams_.setFactorization("QR")
             # # self.isamParams_.evaluateNonlinearError = True
         # print(f"ISAM Params:\n{self.isamParams_}")
     
@@ -185,9 +188,9 @@ class SessionManager:
     def UpdateSmoother(self, reset:bool=False, 
                              newLag:float|None=None,
                              optimizationTimeList:list|None=None):
-        if self.currTimestamp_ > 1000:
-            old_graph = self.smoother_.getFactors()
-            old_values = self.smoother_.calculateEstimate()
+        # if self.currTimestamp_ > 1000:
+        #     old_graph = self.smoother_.getFactors()
+        #     old_values = self.smoother_.calculateEstimate()
         # Reset if needed
         if reset:
             self.smoother_ = gtsam.IncrementalFixedLagSmoother(float(self.params.fixedLagKeepFrames), self.isamParams_)
@@ -236,31 +239,31 @@ class SessionManager:
         # Find the linear factors
         currGraph = self.smoother_.getFactors()
         for idx in marginalFactorsIdxs:
-            f = currGraph.at(idx)
+            factor = currGraph.at(idx)
 
             # Factors can be null due to the way the fixed lag smoother works. If a factor is null, it means it has been marginalized out and we can skip it.
-            if not f:
+            if not factor:
                 continue
             
             # Don't need to worry about unary or binary factors.
-            if len(f.keys()) <= maxNodesToKeep:
+            if len(factor.keys()) <= maxNodesToKeep:
                 # self.priorIdx_ = idx
                 continue
 
-            if isinstance(f, gtsam.LinearContainerFactor):
-                hf = f.toHessian()
+            if isinstance(factor, gtsam.LinearContainerFactor):
+                hf = factor.toHessian()
                 if hf is not None:
                     keys = hf.keys()
                     aug_info = hf.augmentedInformation()
                 else:
-                    jf = f.toJacobian()
+                    jf = factor.toJacobian()
                     keys = jf.keys()
                     aug_info = jf.augmentedInformation()
 
 
                 G = aug_info[:-1,:-1] # Information matrix portion
                 g = aug_info[:-1, -1] # Information vector portion
-                c = aug_info[ -1, -1] # Constant term (not used)
+                f = aug_info[ -1, -1] # Constant term (not used)
 
                 dim = 6 # Pose3
                 n = len(keys)
@@ -307,13 +310,15 @@ class SessionManager:
                 gk = g[keep_idxs]
 
                 # Compute the Schur complement
-                G_prime = Gkk - Grk.T @ np.linalg.inv(Grr) @ Grk
-                g_prime = gk - Grk.T @ np.linalg.inv(Grr) @ gr
+                Grr_inv = np.linalg.inv(Grr)
+                G_prime = Gkk - Grk.T @ Grr_inv @ Grk
+                g_prime = gk - Grk.T @ Grr_inv @ gr
+                f_prime = f - gr.T @ Grr_inv @ gr
 
                 new_aug_info = np.zeros((len(keep_idxs) + 1, len(keep_idxs) + 1))
                 new_aug_info[:-1, :-1] = G_prime
                 new_aug_info[:-1, -1] = g_prime
-                new_aug_info[-1, -1] = c
+                new_aug_info[-1, -1] = f_prime
 
                 # Create new binary factor
                 graph = gtsam.NonlinearFactorGraph()
@@ -629,7 +634,8 @@ class SessionManager:
             self.RenameKeysInPlace(
                 {self.currentSessionSymbol_: self.addToPriorSymbol_} if self.decisionState_ == NodeDecision.MAP 
                 else {self.addToPriorSymbol_: self.currentSessionSymbol_}, 
-                [self.recentKeysQueue_[0]]
+                [self.recentKeysQueue_[0]],
+                retainNewNodes=True if self.decisionState_ == NodeDecision.MAP else False
                 )
             # decisionStateChanged = False
         # if self.initialFactorInfo_:
@@ -1245,7 +1251,7 @@ class SessionManager:
         self.UpdatePriorTree()
         # self.UpdatePriorKeyToFactorIndexDict()
 
-    def SaveSession(self, directory:str|Path|None=None, final: bool = True):
+    def SaveSession(self, directory:str|Path|None=None, final: bool = True) -> Path | None:
         if directory is None:
             directory = self.params.saveSessionDir
         
@@ -1265,7 +1271,7 @@ class SessionManager:
                     res = input(f"Enter a new directory path or enter n/no to abort: ")
                     if res.lower() == "n" or res.lower() == "no":
                         print("Aborting save...")
-                        return
+                        return None
                     else:
                         confirm = input(f"Confirm new directory path {res} (y/[n]): ")
                         if confirm and confirm.lower()[0] == "y":
@@ -1315,6 +1321,7 @@ class SessionManager:
             yaml.safe_dump(metadata, f, sort_keys=False)
 
         print(f"Done saving session.")
+        return directory
 
     def LoadSession(self, directory:str|Path|None=None, sharedScans: dict[tuple[str, int], o3d.geometry.PointCloud] | None = None):
         '''
@@ -1385,13 +1392,14 @@ class SessionManager:
                      pose:np.ndarray|gtsam.gtsam.Pose3|None=None, 
                      relPose:gtsam.Pose3|None=None, 
                      timestamp:float=0.0,
-                     gpsData:list=[]
+                     gpsData:list=[],
+                     gtPose:gtsam.Pose3|None=None
                      ) -> UpdateResult:
         '''
         Assumes pose is being added to last value in graph
         '''
         print(f"\nTime: {self.currTimestamp_}")
-        if self.currTimestamp_ >= 114:
+        if self.currTimestamp_ >= 11:
             pass
 
         result = self.UpdateResult()
@@ -1410,6 +1418,9 @@ class SessionManager:
 
         if self.params.useGps and gpsData and self.decisionState_ == NodeDecision.MAP:
             self.AddGpsFactor(*gpsData)
+
+        if gtPose is not None:
+            self.AddPrior(key, gtPose, gtsam.noiseModel.Isotropic.Sigma(6, 1e-2), skipValue=True)
 
         result.key = key
         self.loopCnt_ += 1
@@ -1448,18 +1459,18 @@ class SessionManager:
         #          Add bad loop closure for boundary accuracy tests              #
         ##########################################################################
 
-        if len(self.sessionKeys[self.addToPriorSymbol_]) == 2:
-            print(f"Adding bad loop closure for boundary accuracy tests at session key {self.sessionKeys[self.addToPriorSymbol_][1]}")
-            # Add bad loop closure for boundary accuracy tests
-            badPoseOffset = gtsam.Pose3(gtsam.Rot3().Ypr(np.deg2rad(10), 0, 0), gtsam.Point3(0.5, 0.5, 0.5))
-            currPose = self.currentEstimate_.atPose3(self.sessionKeys[self.addToPriorSymbol_][1])
-            badPose = currPose * badPoseOffset
-            self.AddFactor(gtsam.BetweenFactorPose3(
-                self.sessionKeys[self.addToPriorSymbol_][1],
-                self.closestSubmapData_.submapKey,
-                badPose.between(self.currentEstimate_.atPose3(self.closestSubmapData_.submapKey)),
-                gtsam.noiseModel.Isotropic.Variance(6, 1.0)
-            ))
+        # if len(self.sessionKeys[self.addToPriorSymbol_]) == 2:
+        #     print(f"***** Adding bad loop closure for boundary accuracy tests at session key {self.sessionKeys[self.addToPriorSymbol_][1]}")
+        #     # Add bad loop closure for boundary accuracy tests
+        #     badPoseOffset = gtsam.Pose3(gtsam.Rot3().Ypr(np.deg2rad(10), 0, 0), gtsam.Point3(0.5, 0.5, 0.5))
+        #     currPose = self.currentEstimate_.atPose3(self.sessionKeys[self.addToPriorSymbol_][1])
+        #     badPose = currPose * badPoseOffset
+        #     self.AddFactor(gtsam.BetweenFactorPose3(
+        #         self.sessionKeys[self.addToPriorSymbol_][1],
+        #         self.closestSubmapData_.submapKey,
+        #         badPose.between(self.currentEstimate_.atPose3(self.closestSubmapData_.submapKey)),
+        #         gtsam.noiseModel.Isotropic.Variance(6, 1.0)
+        #     ))
 
         ##########################################################################
 
@@ -1490,12 +1501,23 @@ class SessionManager:
                 print("   Warning! Could not initialize with scan matching. Please check if this is correct!")
                 print("****************************************************************************************\n")
 
+                ##########################################################################
+                #        Add noise to initial prior for boundary accuracy tests          #
+                ##########################################################################
+
+                # print(f"***** Adding bad start offset for boundary accuracy tests.")
+                # # Add bad loop closure for boundary accuracy tests
+                # badPoseOffset = gtsam.Pose3(gtsam.Rot3().Ypr(np.deg2rad(1), np.deg2rad(1), np.deg2rad(0.01)), gtsam.Point3(5.0, 0.5, -5.0))
+                # pose = pose * badPoseOffset
+
+                ##########################################################################
+
 
         if self.priorGraph_.size() != 0:
-            noise = gtsam.noiseModel.Diagonal.Variances(np.array([np.pi**2, np.pi**2, np.pi**2, 10, 10, 10]))
+            noise = gtsam.noiseModel.Diagonal.Sigmas(np.array([np.deg2rad(5), np.deg2rad(5), np.deg2rad(20), 1, 1, 1]))
         else:
             noise = gtsam.noiseModel.Diagonal.Sigmas(np.array([1e-2]*6))
-        key = gtsam.Symbol(self.currentSessionSymbol_, 0).key()
+        key = gtsam.Symbol(self.currentSessionSymbol_ if self.decisionState_ == NodeDecision.LOCALIZE else self.addToPriorSymbol_, 0).key()
         self.AddPrior(key, pose, noise)
         self.AddPointCloud(key, pointCloud, timestamp=timestamp)
 
@@ -1591,7 +1613,7 @@ class SessionManager:
                 pctChange = (self.covChangeEndKeyDets_[k][-1] - self.covChangeEndKeyDets_[k][-2]) / self.covChangeEndKeyDets_[k][-2]
                 print(f"Percent change determinant for end key   {gtsam.Symbol(k).string()} is {pctChange*100:.2f}%")
 
-                if (pctChange < self.params.boundaryMap2Loc and pctChange >= self.params.boundaryMap2LocNearZero) or flush:
+                if (pctChange < -self.params.boundaryMap2LocNearZero and pctChange >= -self.params.boundaryMap2Loc) or flush:
                     # Must be below threshold for 2 in a row
                     if self.covChangeEndKeyJitterBuffer_[k] < 0 and not flush: # TODO: Change back to < 1
                         self.covChangeEndKeyJitterBuffer_[k] += 1

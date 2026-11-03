@@ -310,6 +310,8 @@ def evaluate_policy(policy_dir: Path, label: str, scans_dir: Path = DEFAULT_SCAN
     res.opt_times_ms = _load_timing_ms(policy_dir / "timeToOptimize.txt")
     if res.opt_times_ms is None:
         logger.warning("No timeToOptimize.txt found in %s", policy_dir)
+    elif res.policy_name == "RELATIVE_COVARIANCE":
+        res.opt_times_ms = res.opt_times_ms[res.opt_times_ms < 1e3] # Only keep the ones that are less than 1 second. There were some weird outliers.
 
     # Metric + decision timing (try both spellings)
     for candidate in _METRIC_TIMING_CANDIDATES:

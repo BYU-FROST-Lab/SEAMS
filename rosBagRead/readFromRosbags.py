@@ -195,7 +195,7 @@ class ReadTopicsFromRosbag:
                     if self.first_msg_timestamp is None:
                         self.first_msg_timestamp = timestamp
                     if timestamp - self.first_msg_timestamp < self.waiting_threshold: # If I don't want to use the start of the bag for some reason, this is where you can tell it to wait
-                        continue 
+                        continue
                     
                     self.first_msg_timestamp = timestamp
                     start_ts_ns = timestamp_ns

@@ -23,12 +23,13 @@ class LoopClosure:
     maxCorrespondenceDist: float = 0.5
     showScanMatchResult: int = 0    # 0 = no visualization, 1 = visualize initial alignment, 2 = visualize final alignment, 3 = visualize both
     showResultSkipFrames: int = 0   # 0 = visualize every frame, 1 = visualize every other frame, 2 = visualize every third frame, etc.
-    debug: bool = False
+    debug: bool = True
 
 # Geometry policy
 @dataclass
 class DistancePolicy:
-    minDistance: float | int = 35
+    minDistance: float | int = 37
+    debug: bool = True
 
 # Overlap policy
 @dataclass
@@ -84,7 +85,7 @@ class Params:
     ##################################################################
 
     # Fixed Lag Smoother Params
-    fixedLagKeepFrames: int = 100
+    fixedLagKeepFrames: int = 80
     fixedLagMarg: FixedLagMarginalizationType = FixedLagMarginalizationType.APPROX_PRIOR
     # fixedLagMarg: FixedLagMarginalizationType = FixedLagMarginalizationType.DENSE
     linearFactorMaxNodes: int = 2       # 2 = Binary factor
@@ -125,8 +126,8 @@ class Params:
 
     # Boundary Thresholds: Positive -> increasing covariance, Negative -> decreasing covariance
     boundaryLoc2Map: float = 0.1
-    boundaryMap2Loc: float = -0.1
-    boundaryMap2LocNearZero: float = -0.01
+    boundaryMap2Loc: float = 0.1
+    boundaryMap2LocNearZero: float = 0.01
 
     # GPS
     useGps: bool = False

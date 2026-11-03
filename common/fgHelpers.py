@@ -114,8 +114,10 @@ def plot_graph(graph: gtsam.gtsam.NonlinearFactorGraph,
                addKeyLabels:bool=False,
                changeColorBySymbols:bool=False,
                symbolColors: dict[int, str] = {},
+               symbolLabels: dict[int, str] = {},
                plotValuePoints:bool=True,
                plotGridSize:float|None=None,
+               skipUnaryFactors:bool=False,
                ):
     
     if ax is None:
@@ -176,6 +178,8 @@ def plot_graph(graph: gtsam.gtsam.NonlinearFactorGraph,
             y.append(p.y())
         
         if len(keys) == 1: # Unary factor (prior or gps or something)
+            if skipUnaryFactors:
+                continue
             cx = x[0]
             cy = y[0] + 5
             factor_color = unary_factor_color
@@ -201,8 +205,8 @@ def plot_graph(graph: gtsam.gtsam.NonlinearFactorGraph,
             global_seg_color.append(factor_color)
             
             
-    ax.scatter(global_cx, global_cy, marker='s', s=1, color=global_c_color, alpha=alpha)
-    lc = LineCollection(global_segments, colors=global_seg_color, linewidths=0.5, alpha=alpha)
+    ax.scatter(global_cx, global_cy, marker='s', s=1, color=global_c_color, alpha=alpha, zorder=1)
+    lc = LineCollection(global_segments, colors=global_seg_color, linewidths=0.5, alpha=alpha, zorder=1)
     ax.add_collection(lc)
         
         
@@ -212,7 +216,7 @@ def plot_graph(graph: gtsam.gtsam.NonlinearFactorGraph,
     # ------------------------------------------------------------
     if plotValuePoints:
         plot_points(values.keys(), values, ax=ax, color=default_point_color, alpha=alpha, addKeyLabels=addKeyLabels, 
-                    changeColorBySymbols=changeColorBySymbols, symbolColors=symbolColors)
+                    changeColorBySymbols=changeColorBySymbols, symbolColors=symbolColors, symbolLabels=symbolLabels)
 
     ax.set_title(title)
     ax.set_xlabel("x")
@@ -234,6 +238,7 @@ def plot_points(
         addKeyLabels=False, 
         changeColorBySymbols:bool=False,
         symbolColors: dict[int, str] = {},
+        symbolLabels: dict[int, str] = {},
         ):
     px = []
     py = []
@@ -270,7 +275,7 @@ def plot_points(
         else:
             colors.append(color)
             
-    ax.scatter(px, py, s=10, color=colors, alpha=alpha)
+    ax.scatter(px, py, s=1, color=colors, alpha=alpha)
 
     if addKeyLabels:
         for x, y, k in zip(px, py, keyLabels):
@@ -280,8 +285,12 @@ def plot_points(
     if changeColorBySymbols:
         legendElements = []
         for ascii_chr, color in symbolColors.items():
+            if ascii_chr in symbolLabels:
+                ascii_chr_str = symbolLabels[ascii_chr]
+            else:
+                ascii_chr_str = chr(ascii_chr)
             legendElements.append(
-                    Line2D([0],[0], marker='o', color='w', label=chr(ascii_chr), markerfacecolor=color),
+                    Line2D([0],[0], marker='o', color='w', label=ascii_chr_str, markerfacecolor=color),
             )
         ax.legend(handles=legendElements, loc='lower right')
 
@@ -291,7 +300,7 @@ def plot_isam_graph(isam: gtsam.ISAM2):
     plot_graph(curr_graph, curr_est)
 
 def plot_graph_covariances(keys: list[int], 
-                           graph: gtsam.NonlinearFactorGraph | gtsam.IncrementalFixedLagSmoother, 
+                           graph: gtsam.NonlinearFactorGraph | gtsam.IncrementalFixedLagSmoother | gtsam.ISAM2, 
                            values: gtsam.Values, 
                            ax, 
                            subset='xy', 
@@ -310,7 +319,7 @@ def plot_graph_covariances(keys: list[int],
         except Exception as e:
             print("Error creating marginals: ", e)
             return
-    elif isinstance(graph, gtsam.IncrementalFixedLagSmoother):
+    elif isinstance(graph, gtsam.IncrementalFixedLagSmoother) or isinstance(graph, gtsam.ISAM2):
         marginals = graph
     else:
         raise TypeError("graph must be a gtsam.NonlinearFactorGraph or gtsam.IncrementalFixedLagSmoother")
@@ -481,6 +490,27 @@ def covariance_ellipse(x, y, cov, ax, n_std=3.0, facecolor='none', **kwargs):
 
     ellipse.set_transform(transf + ax.transData)
     return ax.add_patch(ellipse)
+
+def plot_hessian(graph: gtsam.gtsam.NonlinearFactorGraph | gtsam.gtsam.GaussianFactorGraph, 
+                 values: gtsam.Values | None = None, 
+                 title: str = "", 
+                 ax: Axes | None = None) -> Axes:
+    if isinstance(graph, gtsam.gtsam.NonlinearFactorGraph):
+        if values is None:
+            raise Exception("Must pass a valid values object in order to linearize the NonlinearFactorGraph")
+        # TODO: Look at graph.linearizeToHessianFactor() instead of just linearize
+        gfg = graph.linearize(values)
+        hessian = gfg.hessian()[0]
+    elif isinstance(graph, gtsam.gtsam.GaussianFactorGraph):
+        hessian = graph.hessian()[0]
+    else:
+        raise Exception(f"Current graph type ({type(graph)}) is invalid. Graph must be of type gtsam.gtsam.NonlinearFactorGraph or gtsam.gtsam.GaussianFactorGraph.")
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=(6, 6))
+    ax.spy(hessian, precision=1e-9, markersize=5)
+    ax.set_title(title)
+    return ax
 
 def getBlockKey(cell):
     if type(cell) == GridIndex:

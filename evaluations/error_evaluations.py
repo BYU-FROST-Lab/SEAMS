@@ -21,9 +21,11 @@ from __future__ import annotations
 import argparse
 import copy
 import logging
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from abc import ABC, abstractmethod
 
 import numpy as np
 import pandas as pd
@@ -56,9 +58,18 @@ DELTA_UNIT_MAP: dict[str, metrics.Unit] = {
     "m": metrics.Unit.meters,
 }
 
+@dataclass 
+class ErrorResultBase(ABC):
+    """Base class for error evaluation results."""
+
+    @abstractmethod
+    def stats_row(self) -> dict[str, float | int | str]:
+        """Return a dictionary of statistics for this result."""
+        pass
+
 
 @dataclass
-class PairEvaluation:
+class PairEvaluation(ErrorResultBase):
     """APE/RPE results for one reference–estimate pair."""
 
     ref_name: str
@@ -133,6 +144,15 @@ def unique_path_labels(paths: list[Path]) -> list[str]:
 TUM_ESTIMATE_NAME = "odom_tum.txt"
 
 
+def _natural_path_key(path: Path) -> tuple[tuple[int, int | str], ...]:
+    """Sort all numeric components in a path numerically."""
+    return tuple(
+        (0, int(component)) if component.isdecimal() else (1, component)
+        for component in re.split(r"(\d+)", str(path).casefold())
+        if component
+    )
+
+
 def resolve_estimate_files(est_args: list[str | Path]) -> list[Path]:
     """Expand estimate arguments into TUM files.
 
@@ -150,11 +170,15 @@ def resolve_estimate_files(est_args: list[str | Path]) -> list[Path]:
         elif path.is_dir():
             direct = path / TUM_ESTIMATE_NAME
             nested = sorted(
-                p for p in path.glob(f"*/{TUM_ESTIMATE_NAME}") if p.is_file()
+                (p for p in path.glob(f"*/{TUM_ESTIMATE_NAME}") if p.is_file()),
+                key=_natural_path_key,
             )
             candidates = ([direct] if direct.is_file() else []) + nested
             if not candidates:
-                candidates = sorted(p for p in path.rglob(TUM_ESTIMATE_NAME) if p.is_file())
+                candidates = sorted(
+                    (p for p in path.rglob(TUM_ESTIMATE_NAME) if p.is_file()),
+                    key=_natural_path_key,
+                )
             if not candidates:
                 raise FileNotFoundError(
                     f"No {TUM_ESTIMATE_NAME} files found under directory {path}"
@@ -171,7 +195,7 @@ def resolve_estimate_files(est_args: list[str | Path]) -> list[Path]:
 
     if not found:
         raise FileNotFoundError("No estimate TUM files found.")
-    return found
+    return sorted(found, key=_natural_path_key)
 
 
 def _associate(
@@ -355,7 +379,7 @@ def evaluate(
     return results
 
 
-def results_to_table(results: list[PairEvaluation]) -> pd.DataFrame:
+def results_to_table[T: ErrorResultBase](results: list[T]) -> pd.DataFrame:
     return pd.DataFrame([r.stats_row() for r in results])
 
 
