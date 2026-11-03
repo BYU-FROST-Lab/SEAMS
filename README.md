@@ -1,7 +1,7 @@
 # Sparse and Efficient Adaptive Multi-Session LiDAR SLAM: Maintaining Long-Term Factor Graphs Across Localization and Mapping Transitions
 
 
-This repository is the official implementation of my thesis "[Sparse and Efficient Adaptive Multi-Session LiDAR SLAM: Maintaining Long-Term Factor Graphs Across Localization and Mapping Transitions](./paper/) which expanded my "[Efficient Multi-Session LiDAR SLAM with Sparse Marginalization and Adaptive Mapping](./paper/Efficient%20Multi-Sessioh%20Sn%20LiDAR%20SLAM%20witparse%20Marginalization%20and%20Adaptive%20Mapping%20-%20github.pdf)" paper which is currently under review at ICRA 2027.
+This repository is the official implementation of my thesis "[Sparse and Efficient Adaptive Multi-Session LiDAR SLAM: Maintaining Long-Term Factor Graphs Across Localization and Mapping Transitions](./paper/) which expanded my "[Efficient Multi-Session LiDAR SLAM with Sparse Marginalization and Adaptive Mapping](./paper/Efficient%20Multi-Sessioh%20Sn%20LiDAR%20SLAM%20witparse%20Marginalization%20and%20Adaptive%20Mapping%20-%20github.pdf)" paper which is currently under review at ICRA 2027. My thesis expanded explanations and experiments but the main code pipeline is the same between the two.
 
 
 ## Setup
